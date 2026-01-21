@@ -1,0 +1,78 @@
+
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Live Edit</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+    <style>
+        @import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap');
+        
+        body {
+            font-family: 'Inter', sans-serif;
+            background-color: #0a0a0a;
+            color: #d1d1d1;
+            margin: 0;
+            overflow: hidden;
+            letter-spacing: -0.01em;
+        }
+
+        .editor-bg { background-color: #0a0a0a; }
+        .editor-surface { background-color: #161616; }
+        .editor-border { border-color: #2a2a2a; }
+        .editor-input { background-color: #1f1f1f; border-color: #333; }
+        
+        .accent-green { color: #00ff41; }
+        .accent-magenta { color: #f0f; }
+        .accent-cyan { color: #0ff; }
+        
+        .glass-pro {
+            background: rgba(22, 22, 22, 0.85);
+            backdrop-filter: blur(20px);
+            border: 1px solid rgba(255, 255, 255, 0.05);
+        }
+
+        .tab-active {
+            background: #2a2a2a;
+            color: #fff;
+            border-bottom: 2px solid #00ff41;
+        }
+
+        .color-wheel {
+            background: conic-gradient(red, yellow, lime, aqua, blue, magenta, red);
+            border-radius: 50%;
+            position: relative;
+        }
+
+        .color-wheel::after {
+            content: '';
+            position: absolute;
+            inset: 4px;
+            background: #161616;
+            border-radius: 50%;
+        }
+
+        ::-webkit-scrollbar { width: 4px; height: 4px; }
+        ::-webkit-scrollbar-track { background: #0a0a0a; }
+        ::-webkit-scrollbar-thumb { background: #333; border-radius: 2px; }
+        ::-webkit-scrollbar-thumb:hover { background: #444; }
+    </style>
+<script type="importmap">
+{
+  "imports": {
+    "react/": "https://esm.sh/react@^19.2.3/",
+    "react": "https://esm.sh/react@^19.2.3",
+    "react-dom/": "https://esm.sh/react-dom@^19.2.3/",
+    "@google/genai": "https://esm.sh/@google/genai@^1.37.0"
+  }
+}
+</script>
+<link rel="stylesheet" href="/index.css">
+</head>
+<body class="editor-bg">
+    <div id="root"></div>
+<script type="module" src="/index.tsx"></script>
+</body>
+</html>
