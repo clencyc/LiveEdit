@@ -1,6 +1,6 @@
 {
-  "buildCommand": "cd LiveEditFronten && npm install && npm run build",
-  "outputDirectory": "LiveEditFronten/dist",
+  "buildCommand": "npm install && npm run build",
+  "outputDirectory": "dist",
   "rewrites": [
     {
       "source": "/(.*)",
