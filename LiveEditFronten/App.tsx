@@ -6,6 +6,7 @@ import ChatInterface from './components/ChatInterface';
 import LiveInterface from './components/LiveInterface';
 import VideoGenerator from './components/VideoGenerator';
 import MediaSidebar from './components/MediaSidebar';
+import LandingPage from './components/LandingPage';
 
 declare global {
   interface AIStudio {
@@ -23,6 +24,7 @@ const App: React.FC = () => {
   const [showKeyPrompt, setShowKeyPrompt] = useState(false);
   const [assets, setAssets] = useState<MediaAsset[]>([]);
   const [isSidebarOpen, setIsSidebarOpen] = useState(true);
+  const [showLanding, setShowLanding] = useState(true);
 
   useEffect(() => {
     const checkKey = async () => {
@@ -54,6 +56,10 @@ const App: React.FC = () => {
       setMode(AppMode.GENERATE);
     }
   };
+
+  if (showLanding) {
+    return <LandingPage onStart={() => setShowLanding(false)} />;
+  }
 
   return (
     <div className="flex flex-col h-screen editor-bg text-neutral-300 overflow-hidden">

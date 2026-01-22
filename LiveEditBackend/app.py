@@ -1,4 +1,4 @@
-from flask import Flask, request, jsonify
+from flask import Flask, request, jsonify, send_file
 from flask_cors import CORS
 import google.generativeai as genai
 import json
@@ -7,6 +7,8 @@ import subprocess
 import tempfile
 from datetime import datetime
 from dotenv import load_dotenv
+import psycopg2
+from psycopg2.extras import RealDictCursor
 
 load_dotenv()
 
@@ -20,12 +22,119 @@ if not API_KEY:
 
 genai.configure(api_key=API_KEY)
 model = genai.GenerativeModel("gemini-2.5-flash")
+# Revert to supported video analysis model
 video_model = genai.GenerativeModel("gemini-2.5-pro")
+
+# Database connections
+DATABASE_URL = os.getenv('DATABASE_URL')
+if not DATABASE_URL:
+    raise ValueError("DATABASE_URL not found in .env file")
+
+def get_db_connection():
+    """Create a new database connection"""
+    return psycopg2.connect(DATABASE_URL, cursor_factory=RealDictCursor)
 
 @app.route('/health', methods=['GET'])
 def health_check():
     """Health check endpoint"""
     return jsonify({'status': 'ok', 'message': 'Backend is running'})
+
+@app.route('/api/audio-effects', methods=['GET'])
+def list_audio_effects():
+    """Get all available audio effects from database"""
+    try:
+        conn = get_db_connection()
+        cur = conn.cursor()
+        cur.execute("""
+            SELECT id, name, filename, category, description, duration_seconds, tags
+            FROM audio_effects
+            ORDER BY name
+        """)
+        effects = cur.fetchall()
+        cur.close()
+        conn.close()
+        return jsonify([dict(effect) for effect in effects])
+    except Exception as e:
+        print(f"Error fetching audio effects: {str(e)}")
+        return jsonify({'error': str(e)}), 500
+
+@app.route('/api/audio-effects/<filename>', methods=['GET'])
+def get_audio_file(filename):
+    """Serve an audio file from the sounds directory"""
+    try:
+        sounds_dir = os.path.join(os.path.dirname(__file__), 'sounds')
+        file_path = os.path.join(sounds_dir, filename)
+        if not os.path.exists(file_path):
+            return jsonify({'error': 'Audio file not found'}), 404
+        return send_file(file_path, mimetype='audio/mpeg')
+    except Exception as e:
+        print(f"Error serving audio file: {str(e)}")
+        return jsonify({'error': str(e)}), 500
+
+@app.route('/api/audio-effects/import', methods=['POST'])
+def import_audio_from_url():
+    """Download audio from URL and add to library"""
+    import requests
+    try:
+        data = request.get_json()
+        url = data.get('url')
+        name = data.get('name')
+        category = data.get('category', 'effect')
+        description = data.get('description', '')
+        tags = data.get('tags', [])
+        
+        if not url or not name:
+            return jsonify({'error': 'URL and name are required'}), 400
+        
+        # Download the file
+        response = requests.get(url, timeout=30)
+        response.raise_for_status()
+        
+        # Generate filename from name
+        import re
+        filename = re.sub(r'[^\w\s-]', '', name.lower())
+        filename = re.sub(r'[-\s]+', '_', filename)
+        filename = f"{filename}.mp3"
+        
+        # Save to sounds directory
+        sounds_dir = os.path.join(os.path.dirname(__file__), 'sounds')
+        os.makedirs(sounds_dir, exist_ok=True)
+        file_path = os.path.join(sounds_dir, filename)
+        
+        with open(file_path, 'wb') as f:
+            f.write(response.content)
+        
+        # Add to database
+        conn = get_db_connection()
+        cur = conn.cursor()
+        cur.execute("""
+            INSERT INTO audio_effects (name, filename, category, description, tags)
+            VALUES (%s, %s, %s, %s, %s)
+            ON CONFLICT (filename) DO UPDATE
+            SET name = EXCLUDED.name,
+                category = EXCLUDED.category,
+                description = EXCLUDED.description,
+                tags = EXCLUDED.tags
+            RETURNING id;
+        """, (name, filename, category, description, tags))
+        effect_id = cur.fetchone()['id']
+        conn.commit()
+        cur.close()
+        conn.close()
+        
+        return jsonify({
+            'success': True,
+            'id': effect_id,
+            'filename': filename,
+            'message': f'Audio effect "{name}" imported successfully'
+        })
+    except requests.exceptions.RequestException as e:
+        return jsonify({'error': f'Failed to download audio: {str(e)}'}), 500
+    except Exception as e:
+        print(f"Error importing audio: {str(e)}")
+        import traceback
+        traceback.print_exc()
+        return jsonify({'error': str(e)}), 500
 
 @app.route('/api/analyze-video', methods=['POST'])
 def analyze_video():
@@ -59,8 +168,30 @@ def analyze_video():
         print(f"Video file size: {len(video_data)} bytes, MIME type: {mime_type}")
         
         # Create analysis prompt
-        analysis_prompt = f"""Analyze this video thoroughly: describe key scenes with timestamps, detect actions/causes, suggest edits based on user request: {user_prompt}.
-Output strict JSON: {{"summary": "...", "key_events": [...], "edit_plan": [{{"type": "cut", "start": "00:12", "end": "00:45"}}]}}"""
+        analysis_prompt = f"""You are viewing a video file. You MUST analyze the actual video content frame-by-frame.
+
+USER REQUEST: {user_prompt}
+
+YOUR TASK:
+1. Watch the video and identify the exact timestamps where requested actions occur
+2. Generate a concrete ffmpeg-compatible edit plan
+3. Return ONLY executable operations, NO instructions or advice
+
+Example - if user says "add sound when I smile":
+- Detect the frame where the person smiles
+- Return: {{"type": "audio_cue", "time": "00:02.5", "description": "smile detected"}}
+
+Example - if user says "trim first 2 seconds":
+- Return: {{"type": "cut", "start": "00:00", "end": "00:02", "description": "remove intro"}}
+
+OUTPUT FORMAT (strict JSON only):
+{{
+  "summary": "what you see in the video (person, actions, timing)",
+  "key_events": [{{"time": "00:01.2", "description": "person looks at camera"}}, {{"time": "00:02.5", "description": "person smiles"}}],
+  "edit_plan": [{{"type": "cut", "start": "00:00", "end": "00:02"}}, {{"type": "audio_cue", "time": "00:02.5", "description": "add electronic pulse at smile"}}]
+}}
+
+CRITICAL: Base all timestamps on what you actually see in the video. Use MM:SS.MS format."""
         
         # Create inline data structure for the video
         video_part = {
@@ -193,6 +324,19 @@ if __name__ == '__main__':
                 edit_plan = json.loads(edit_plan_str)
             except json.JSONDecodeError:
                 return jsonify({'error': 'Invalid edit plan JSON'}), 400
+
+            print(f"EDIT_PLAN: {edit_plan}")
+
+            # If audio cues exist but no audio provided, bail early to avoid silent no-op
+            has_audio_cue = any(isinstance(e, dict) and e.get('type') == 'audio_cue' for e in edit_plan or [])
+            if has_audio_cue and audio_file is None:
+                return jsonify({'error': 'Audio cue requested but no audio file provided. Select/import an audio effect before rendering.'}), 400
+
+            # If an audio_cue is present, use its time as start unless user provided one
+            if edit_plan:
+                cue_times = [e.get('time') for e in edit_plan if isinstance(e, dict) and e.get('type') == 'audio_cue' and e.get('time')]
+                if cue_times and audio_start == '00:00':
+                    audio_start = cue_times[0]
         
             # Save original video to temp file
             temp_dir = tempfile.mkdtemp()
@@ -236,6 +380,7 @@ if __name__ == '__main__':
                         end_sec = time_to_seconds(end)
                     
                         filter_parts.append(f"between(t,{start_sec},{end_sec})")
+                    # Non-cut edits (enhancement/audio_cue) are currently no-ops for video track
             
                 if filter_parts:
                     # Create filter to remove segments
@@ -326,12 +471,21 @@ if __name__ == '__main__':
         return cmd
 
     def time_to_seconds(time_str):
-        """Convert MM:SS or HH:MM:SS to seconds"""
-        parts = time_str.split(':')
-        if len(parts) == 2:
-            return int(parts[0]) * 60 + int(parts[1])
-        elif len(parts) == 3:
-            return int(parts[0]) * 3600 + int(parts[1]) * 60 + int(parts[2])
-        return 0
+        """Convert time strings (SS, MM:SS, HH:MM:SS) with optional decimals to seconds."""
+        if not time_str:
+            return 0.0
+
+        try:
+            parts = [p.strip() for p in str(time_str).split(':') if p.strip() != '']
+            if len(parts) == 1:
+                return float(parts[0])
+            if len(parts) == 2:
+                return float(parts[0]) * 60 + float(parts[1])
+            if len(parts) == 3:
+                return float(parts[0]) * 3600 + float(parts[1]) * 60 + float(parts[2])
+        except ValueError:
+            return 0.0
+
+        return 0.0
 
     app.run(debug=True, host='0.0.0.0', port=5000)
