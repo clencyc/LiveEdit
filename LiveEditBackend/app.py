@@ -63,7 +63,10 @@ def init_auth_table():
                 email VARCHAR(255) UNIQUE NOT NULL,
                 password_hash VARCHAR(255) NOT NULL,
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                last_login TIMESTAMP
+                last_login TIMESTAMP,
+                subscription_status VARCHAR(50) DEFAULT 'free',
+                subscription_plan VARCHAR(50),
+                subscription_end_date TIMESTAMP
             )
         """)
         conn.commit()
@@ -72,8 +75,61 @@ def init_auth_table():
     except Exception as e:
         print(f"Warning: Could not initialize auth table: {str(e)}")
 
+def init_payment_tables():
+    """Create payment and subscription tables"""
+    try:
+        conn = get_db_connection()
+        cur = conn.cursor()
+        
+        # Create subscription plans table
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS subscription_plans (
+                id SERIAL PRIMARY KEY,
+                name VARCHAR(100) UNIQUE NOT NULL,
+                price DECIMAL(10, 2) NOT NULL,
+                currency VARCHAR(3) DEFAULT 'NGN',
+                duration_days INTEGER NOT NULL,
+                features JSONB,
+                is_active BOOLEAN DEFAULT true,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+        """)
+        
+        # Create transactions table
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS transactions (
+                id SERIAL PRIMARY KEY,
+                user_id INTEGER REFERENCES users(id) ON DELETE CASCADE,
+                reference VARCHAR(255) UNIQUE NOT NULL,
+                amount DECIMAL(10, 2) NOT NULL,
+                currency VARCHAR(3) DEFAULT 'NGN',
+                status VARCHAR(50) DEFAULT 'pending',
+                plan_id INTEGER REFERENCES subscription_plans(id),
+                paystack_reference VARCHAR(255),
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+        """)
+        
+        # Insert default subscription plans
+        cur.execute("""
+            INSERT INTO subscription_plans (name, price, duration_days, features)
+            VALUES 
+                ('Basic', 2000.00, 30, '{"ai_generations": 50, "storage_gb": 5, "video_exports": "720p"}'),
+                ('Pro', 5000.00, 30, '{"ai_generations": 200, "storage_gb": 20, "video_exports": "1080p", "priority_support": true}'),
+                ('Premium', 10000.00, 30, '{"ai_generations": -1, "storage_gb": 100, "video_exports": "4K", "priority_support": true, "api_access": true}')
+            ON CONFLICT (name) DO NOTHING
+        """)
+        
+        conn.commit()
+        cur.close()
+        conn.close()
+    except Exception as e:
+        print(f"Warning: Could not initialize payment tables: {str(e)}")
+
 # Initialize auth table on startup
 init_auth_table()
+init_payment_tables()
 
 @app.route('/health', methods=['GET'])
 def health_check():
@@ -627,3 +683,275 @@ if __name__ == '__main__':
         return 0.0
 
     app.run(debug=True, host='0.0.0.0', port=5000)
+
+# Paystack payment endpoints
+@app.route('/api/payments/plans', methods=['GET'])
+def get_subscription_plans():
+    """Get all active subscription plans"""
+    try:
+        conn = get_db_connection()
+        cur = conn.cursor()
+        cur.execute("""
+            SELECT id, name, price, currency, duration_days, features
+            FROM subscription_plans
+            WHERE is_active = true
+            ORDER BY price ASC
+        """)
+        plans = cur.fetchall()
+        cur.close()
+        conn.close()
+        return jsonify([dict(plan) for plan in plans]), 200
+    except Exception as e:
+        print(f"Error fetching plans: {str(e)}")
+        return jsonify({'error': 'Failed to fetch plans'}), 500
+
+@app.route('/api/payments/initialize', methods=['POST'])
+def initialize_payment():
+    """Initialize Paystack payment"""
+    try:
+        data = request.get_json()
+        email = data.get('email')
+        plan_id = data.get('plan_id')
+        
+        if not email or not plan_id:
+            return jsonify({'error': 'Email and plan_id are required'}), 400
+        
+        # Get plan details
+        conn = get_db_connection()
+        cur = conn.cursor()
+        cur.execute("""
+            SELECT id, name, price, currency
+            FROM subscription_plans
+            WHERE id = %s AND is_active = true
+        """, (plan_id,))
+        plan = cur.fetchone()
+        
+        if not plan:
+            cur.close()
+            conn.close()
+            return jsonify({'error': 'Invalid plan'}), 404
+        
+        # Get user
+        cur.execute("SELECT id FROM users WHERE email = %s", (email,))
+        user = cur.fetchone()
+        
+        if not user:
+            cur.close()
+            conn.close()
+            return jsonify({'error': 'User not found'}), 404
+        
+        # Generate reference
+        reference = f"LE_{secrets.token_hex(8)}_{datetime.now().strftime('%Y%m%d%H%M%S')}"
+        
+        # Save transaction
+        cur.execute("""
+            INSERT INTO transactions (user_id, reference, amount, currency, plan_id, status)
+            VALUES (%s, %s, %s, %s, %s, 'pending')
+            RETURNING id
+        """, (user['id'], reference, plan['price'], plan['currency'], plan['id']))
+        transaction_id = cur.fetchone()['id']
+        conn.commit()
+        cur.close()
+        conn.close()
+        
+        # Initialize Paystack payment
+        from paystackapi.paystack import Paystack
+        paystack = Paystack(secret_key=os.getenv('PAYSTACK_SECRET_KEY'))
+        
+        response = paystack.transaction.initialize(
+            email=email,
+            amount=int(float(plan['price']) * 100),  # Convert to kobo
+            reference=reference,
+            callback_url=os.getenv('PAYSTACK_CALLBACK_URL', 'http://localhost:5173/payment/callback'),
+            metadata={
+                'plan_id': plan['id'],
+                'plan_name': plan['name'],
+                'transaction_id': transaction_id
+            }
+        )
+        
+        if response['status']:
+            return jsonify({
+                'success': True,
+                'authorization_url': response['data']['authorization_url'],
+                'access_code': response['data']['access_code'],
+                'reference': reference
+            }), 200
+        else:
+            return jsonify({'error': 'Payment initialization failed'}), 500
+            
+    except Exception as e:
+        print(f"Payment initialization error: {str(e)}")
+        import traceback
+        traceback.print_exc()
+        return jsonify({'error': 'Payment initialization failed'}), 500
+
+@app.route('/api/payments/verify/<reference>', methods=['GET'])
+def verify_payment(reference):
+    """Verify Paystack payment and update subscription"""
+    try:
+        from paystackapi.paystack import Paystack
+        paystack = Paystack(secret_key=os.getenv('PAYSTACK_SECRET_KEY'))
+        
+        # Verify transaction with Paystack
+        response = paystack.transaction.verify(reference=reference)
+        
+        if not response['status']:
+            return jsonify({'error': 'Payment verification failed'}), 400
+        
+        transaction_data = response['data']
+        
+        # Update transaction in database
+        conn = get_db_connection()
+        cur = conn.cursor()
+        
+        cur.execute("""
+            SELECT user_id, plan_id, status
+            FROM transactions
+            WHERE reference = %s
+        """, (reference,))
+        transaction = cur.fetchone()
+        
+        if not transaction:
+            cur.close()
+            conn.close()
+            return jsonify({'error': 'Transaction not found'}), 404
+        
+        if transaction['status'] == 'success':
+            cur.close()
+            conn.close()
+            return jsonify({'message': 'Payment already verified', 'status': 'success'}), 200
+        
+        # Check if payment was successful
+        if transaction_data['status'] == 'success':
+            # Get plan duration
+            cur.execute("""
+                SELECT duration_days, name
+                FROM subscription_plans
+                WHERE id = %s
+            """, (transaction['plan_id'],))
+            plan = cur.fetchone()
+            
+            # Update transaction status
+            cur.execute("""
+                UPDATE transactions
+                SET status = 'success',
+                    paystack_reference = %s,
+                    updated_at = CURRENT_TIMESTAMP
+                WHERE reference = %s
+            """, (transaction_data['reference'], reference))
+            
+            # Update user subscription
+            from datetime import timedelta
+            subscription_end = datetime.now() + timedelta(days=plan['duration_days'])
+            
+            cur.execute("""
+                UPDATE users
+                SET subscription_status = 'active',
+                    subscription_plan = %s,
+                    subscription_end_date = %s
+                WHERE id = %s
+            """, (plan['name'], subscription_end, transaction['user_id']))
+            
+            conn.commit()
+            cur.close()
+            conn.close()
+            
+            return jsonify({
+                'success': True,
+                'message': 'Payment verified successfully',
+                'subscription': {
+                    'status': 'active',
+                    'plan': plan['name'],
+                    'end_date': subscription_end.isoformat()
+                }
+            }), 200
+        else:
+            # Payment failed
+            cur.execute("""
+                UPDATE transactions
+                SET status = 'failed',
+                    updated_at = CURRENT_TIMESTAMP
+                WHERE reference = %s
+            """, (reference,))
+            conn.commit()
+            cur.close()
+            conn.close()
+            
+            return jsonify({'error': 'Payment was not successful'}), 400
+            
+    except Exception as e:
+        print(f"Payment verification error: {str(e)}")
+        import traceback
+        traceback.print_exc()
+        return jsonify({'error': 'Payment verification failed'}), 500
+
+@app.route('/api/user/subscription', methods=['GET'])
+def get_user_subscription():
+    """Get user's current subscription status"""
+    try:
+        # Get email from auth header or query param
+        email = request.args.get('email')
+        if not email:
+            return jsonify({'error': 'Email is required'}), 400
+        
+        conn = get_db_connection()
+        cur = conn.cursor()
+        cur.execute("""
+            SELECT subscription_status, subscription_plan, subscription_end_date
+            FROM users
+            WHERE email = %s
+        """, (email,))
+        user = cur.fetchone()
+        cur.close()
+        conn.close()
+        
+        if not user:
+            return jsonify({'error': 'User not found'}), 404
+        
+        # Check if subscription expired
+        subscription_status = user['subscription_status']
+        if user['subscription_end_date'] and datetime.now() > user['subscription_end_date']:
+            subscription_status = 'expired'
+        
+        return jsonify({
+            'status': subscription_status or 'free',
+            'plan': user['subscription_plan'],
+            'end_date': user['subscription_end_date'].isoformat() if user['subscription_end_date'] else None
+        }), 200
+        
+    except Exception as e:
+        print(f"Error fetching subscription: {str(e)}")
+        return jsonify({'error': 'Failed to fetch subscription'}), 500
+
+@app.route('/api/user/transactions', methods=['GET'])
+def get_user_transactions():
+    """Get user's payment history"""
+    try:
+        email = request.args.get('email')
+        if not email:
+            return jsonify({'error': 'Email is required'}), 400
+        
+        conn = get_db_connection()
+        cur = conn.cursor()
+        
+        cur.execute("""
+            SELECT t.id, t.reference, t.amount, t.currency, t.status, 
+                   t.created_at, sp.name as plan_name
+            FROM transactions t
+            JOIN users u ON t.user_id = u.id
+            LEFT JOIN subscription_plans sp ON t.plan_id = sp.id
+            WHERE u.email = %s
+            ORDER BY t.created_at DESC
+            LIMIT 20
+        """, (email,))
+        
+        transactions = cur.fetchall()
+        cur.close()
+        conn.close()
+        
+        return jsonify([dict(t) for t in transactions]), 200
+        
+    except Exception as e:
+        print(f"Error fetching transactions: {str(e)}")
+        return jsonify({'error': 'Failed to fetch transactions'}), 500

@@ -8,6 +8,9 @@ import VideoGenerator from './components/VideoGenerator';
 import MediaSidebar from './components/MediaSidebar';
 import LandingPage from './components/LandingPage';
 import AuthForm from './components/AuthForm';
+import { SubscriptionPlans } from './components/SubscriptionPlans';
+import { PaymentModal } from './components/PaymentModal';
+import { useSubscription } from './hooks/useSubscription';
 
 declare global {
   interface AIStudio {
@@ -29,6 +32,11 @@ const App: React.FC = () => {
   const [showAuthForm, setShowAuthForm] = useState(false);
   const [isAuthenticated, setIsAuthenticated] = useState(false);
   const [userEmail, setUserEmail] = useState('');
+  const [showSubscriptionPlans, setShowSubscriptionPlans] = useState(false);
+  const [showPaymentModal, setShowPaymentModal] = useState(false);
+  const [selectedPlan, setSelectedPlan] = useState<{ id: number; name: string; price: number } | null>(null);
+
+  const { subscription, loading: subscriptionLoading, hasAccess, refetch: refetchSubscription } = useSubscription(userEmail);
 
   useEffect(() => {
     // Check if user is already authenticated (from localStorage)
@@ -78,6 +86,7 @@ const App: React.FC = () => {
     setShowLanding(false);
     setShowAuthForm(false);
     localStorage.setItem('userEmail', email);
+    refetchSubscription();
   };
 
   const handleLogout = () => {
@@ -89,12 +98,49 @@ const App: React.FC = () => {
     localStorage.removeItem('userEmail');
   };
 
+  const handleSubscribe = async (planId: number) => {
+    // Fetch plan details for modal
+    try {
+      const response = await fetch('http://localhost:5000/api/payments/plans');
+      const plans = await response.json();
+      const plan = plans.find((p: any) => p.id === planId);
+      
+      if (plan) {
+        setSelectedPlan({ id: plan.id, name: plan.name, price: plan.price });
+        setShowPaymentModal(true);
+      }
+    } catch (error) {
+      console.error('Failed to fetch plan details:', error);
+    }
+  };
+
   if (showLanding && !showAuthForm) {
     return <LandingPage onStart={() => setShowAuthForm(true)} />;
   }
 
   if (showLanding && showAuthForm && !isAuthenticated) {
     return <AuthForm onAuthSuccess={handleAuthSuccess} />;
+  }
+
+  if (showSubscriptionPlans) {
+    return (
+      <div className="min-h-screen editor-bg">
+        <div className="flex items-center justify-between px-6 py-4 border-b border-neutral-800">
+          <h1 className="text-2xl font-bold">Subscription Plans</h1>
+          <button
+            onClick={() => setShowSubscriptionPlans(false)}
+            className="px-4 py-2 text-sm text-neutral-400 hover:text-white transition-colors"
+          >
+            ← Back to App
+          </button>
+        </div>
+        <SubscriptionPlans
+          userEmail={userEmail}
+          onSubscribe={handleSubscribe}
+          currentPlan={subscription?.plan || undefined}
+        />
+      </div>
+    );
   }
 
   return (
@@ -137,9 +183,17 @@ const App: React.FC = () => {
             <span className="text-[10px] text-neutral-300 max-w-[120px] truncate">{userEmail}</span>
           </div>
           <div className="flex items-center gap-2 px-2 py-0.5 rounded bg-neutral-900 text-[10px] border border-neutral-800 font-mono">
-            <span className={`w-1.5 h-1.5 rounded-full ${hasKey ? 'bg-[#00ff41]' : 'bg-orange-500'}`}></span>
-            {hasKey ? 'RENDER_STATION_READY' : 'GUEST_MODE'}
+            <span className={`w-1.5 h-1.5 rounded-full ${
+              subscription?.status === 'active' ? 'bg-[#00ff41]' : 'bg-orange-500'
+            }`}></span>
+            {subscription?.status === 'active' ? `${subscription.plan?.toUpperCase()}` : 'FREE_TIER'}
           </div>
+          <button
+            onClick={() => setShowSubscriptionPlans(true)}
+            className="px-3 py-1.5 text-[9px] font-bold uppercase tracking-widest text-neutral-500 hover:text-[#00ff41] transition-all border border-neutral-800 hover:border-[#00ff41]"
+          >
+            {subscription?.status === 'active' ? 'Manage' : 'Upgrade'}
+          </button>
           <button
             onClick={handleLogout}
             className="px-3 py-1.5 text-[9px] font-bold uppercase tracking-widest text-neutral-500 hover:text-[#00ff41] transition-all border border-neutral-800 hover:border-[#00ff41]"
@@ -195,6 +249,21 @@ const App: React.FC = () => {
             </button>
           </div>
         </div>
+      )}
+
+      {/* Payment Modal */}
+      {showPaymentModal && selectedPlan && (
+        <PaymentModal
+          isOpen={showPaymentModal}
+          onClose={() => {
+            setShowPaymentModal(false);
+            setSelectedPlan(null);
+          }}
+          planId={selectedPlan.id}
+          planName={selectedPlan.name}
+          planPrice={selectedPlan.price}
+          userEmail={userEmail}
+        />
       )}
     </div>
   );
