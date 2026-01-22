@@ -1,0 +1,9 @@
+
+{
+  "name": "Live Edit",
+  "description": "An advanced AI-powered video chatbot that combines real-time multi-modal conversations with high-quality video generation capabilities.",
+  "requestFramePermissions": [
+    "camera",
+    "microphone"
+  ]
+}
