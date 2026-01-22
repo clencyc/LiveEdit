@@ -7,6 +7,7 @@ import LiveInterface from './components/LiveInterface';
 import VideoGenerator from './components/VideoGenerator';
 import MediaSidebar from './components/MediaSidebar';
 import LandingPage from './components/LandingPage';
+import AuthForm from './components/AuthForm';
 
 declare global {
   interface AIStudio {
@@ -25,6 +26,20 @@ const App: React.FC = () => {
   const [assets, setAssets] = useState<MediaAsset[]>([]);
   const [isSidebarOpen, setIsSidebarOpen] = useState(true);
   const [showLanding, setShowLanding] = useState(true);
+  const [showAuthForm, setShowAuthForm] = useState(false);
+  const [isAuthenticated, setIsAuthenticated] = useState(false);
+  const [userEmail, setUserEmail] = useState('');
+
+  useEffect(() => {
+    // Check if user is already authenticated (from localStorage)
+    const authToken = localStorage.getItem('authToken');
+    const savedEmail = localStorage.getItem('userEmail');
+    if (authToken && savedEmail) {
+      setIsAuthenticated(true);
+      setUserEmail(savedEmail);
+      setShowLanding(false);
+    }
+  }, []);
 
   useEffect(() => {
     const checkKey = async () => {
@@ -57,8 +72,29 @@ const App: React.FC = () => {
     }
   };
 
-  if (showLanding) {
-    return <LandingPage onStart={() => setShowLanding(false)} />;
+  const handleAuthSuccess = (email: string) => {
+    setIsAuthenticated(true);
+    setUserEmail(email);
+    setShowLanding(false);
+    setShowAuthForm(false);
+    localStorage.setItem('userEmail', email);
+  };
+
+  const handleLogout = () => {
+    setIsAuthenticated(false);
+    setUserEmail('');
+    setShowLanding(true);
+    setShowAuthForm(false);
+    localStorage.removeItem('authToken');
+    localStorage.removeItem('userEmail');
+  };
+
+  if (showLanding && !showAuthForm) {
+    return <LandingPage onStart={() => setShowAuthForm(true)} />;
+  }
+
+  if (showLanding && showAuthForm && !isAuthenticated) {
+    return <AuthForm onAuthSuccess={handleAuthSuccess} />;
   }
 
   return (
@@ -97,9 +133,19 @@ const App: React.FC = () => {
 
         <div className="flex items-center gap-3">
           <div className="flex items-center gap-2 px-2 py-0.5 rounded bg-neutral-900 text-[10px] border border-neutral-800 font-mono">
+            <span className="text-[8px] text-neutral-500">USER:</span>
+            <span className="text-[10px] text-neutral-300 max-w-[120px] truncate">{userEmail}</span>
+          </div>
+          <div className="flex items-center gap-2 px-2 py-0.5 rounded bg-neutral-900 text-[10px] border border-neutral-800 font-mono">
             <span className={`w-1.5 h-1.5 rounded-full ${hasKey ? 'bg-[#00ff41]' : 'bg-orange-500'}`}></span>
             {hasKey ? 'RENDER_STATION_READY' : 'GUEST_MODE'}
           </div>
+          <button
+            onClick={handleLogout}
+            className="px-3 py-1.5 text-[9px] font-bold uppercase tracking-widest text-neutral-500 hover:text-[#00ff41] transition-all border border-neutral-800 hover:border-[#00ff41]"
+          >
+            Logout
+          </button>
         </div>
       </header>
 
