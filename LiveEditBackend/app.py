@@ -9,6 +9,9 @@ from datetime import datetime
 from dotenv import load_dotenv
 import psycopg2
 from psycopg2.extras import RealDictCursor
+import hashlib
+import hmac
+import secrets
 
 load_dotenv()
 
@@ -34,10 +37,145 @@ def get_db_connection():
     """Create a new database connection"""
     return psycopg2.connect(DATABASE_URL, cursor_factory=RealDictCursor)
 
+def hash_password(password: str) -> str:
+    """Hash a password using PBKDF2"""
+    salt = secrets.token_hex(16)
+    key = hashlib.pbkdf2_hmac('sha256', password.encode(), salt.encode(), 100000)
+    return f"{salt}${key.hex()}"
+
+def verify_password(password: str, hash_val: str) -> bool:
+    """Verify a password against its hash"""
+    try:
+        salt, key = hash_val.split('$')
+        new_key = hashlib.pbkdf2_hmac('sha256', password.encode(), salt.encode(), 100000)
+        return hmac.compare_digest(new_key.hex(), key)
+    except:
+        return False
+
+def init_auth_table():
+    """Create users table if it doesn't exist"""
+    try:
+        conn = get_db_connection()
+        cur = conn.cursor()
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS users (
+                id SERIAL PRIMARY KEY,
+                email VARCHAR(255) UNIQUE NOT NULL,
+                password_hash VARCHAR(255) NOT NULL,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                last_login TIMESTAMP
+            )
+        """)
+        conn.commit()
+        cur.close()
+        conn.close()
+    except Exception as e:
+        print(f"Warning: Could not initialize auth table: {str(e)}")
+
+# Initialize auth table on startup
+init_auth_table()
+
 @app.route('/health', methods=['GET'])
 def health_check():
     """Health check endpoint"""
     return jsonify({'status': 'ok', 'message': 'Backend is running'})
+
+@app.route('/api/auth/signup', methods=['POST'])
+def signup():
+    """Create a new user account"""
+    try:
+        data = request.get_json()
+        email = data.get('email', '').strip().lower()
+        password = data.get('password', '')
+
+        if not email or not password:
+            return jsonify({'error': 'Email and password are required'}), 400
+
+        if len(password) < 6:
+            return jsonify({'error': 'Password must be at least 6 characters'}), 400
+
+        # Check if email is valid
+        import re
+        if not re.match(r'^[^\s@]+@[^\s@]+\.[^\s@]+$', email):
+            return jsonify({'error': 'Invalid email format'}), 400
+
+        try:
+            conn = get_db_connection()
+            cur = conn.cursor()
+
+            # Check if user already exists
+            cur.execute("SELECT id FROM users WHERE email = %s", (email,))
+            if cur.fetchone():
+                cur.close()
+                conn.close()
+                return jsonify({'error': 'Email already registered'}), 409
+
+            # Hash password and create user
+            password_hash = hash_password(password)
+            cur.execute(
+                "INSERT INTO users (email, password_hash) VALUES (%s, %s)",
+                (email, password_hash)
+            )
+            conn.commit()
+
+            # Generate token (in production, use JWT)
+            token = secrets.token_urlsafe(32)
+            
+            cur.close()
+            conn.close()
+
+            return jsonify({'success': True, 'token': token, 'email': email}), 201
+        except psycopg2.IntegrityError:
+            return jsonify({'error': 'Email already registered'}), 409
+    except Exception as e:
+        print(f"Signup error: {str(e)}")
+        return jsonify({'error': 'Signup failed'}), 500
+
+@app.route('/api/auth/login', methods=['POST'])
+def login():
+    """Authenticate a user"""
+    try:
+        data = request.get_json()
+        email = data.get('email', '').strip().lower()
+        password = data.get('password', '')
+
+        if not email or not password:
+            return jsonify({'error': 'Email and password are required'}), 400
+
+        conn = get_db_connection()
+        cur = conn.cursor()
+
+        # Find user
+        cur.execute("SELECT id, password_hash FROM users WHERE email = %s", (email,))
+        user = cur.fetchone()
+
+        if not user or not verify_password(password, user['password_hash']):
+            cur.close()
+            conn.close()
+            return jsonify({'error': 'Invalid email or password'}), 401
+
+        # Update last login
+        cur.execute(
+            "UPDATE users SET last_login = CURRENT_TIMESTAMP WHERE id = %s",
+            (user['id'],)
+        )
+        conn.commit()
+
+        # Generate token (in production, use JWT)
+        token = secrets.token_urlsafe(32)
+
+        cur.close()
+        conn.close()
+
+        return jsonify({'success': True, 'token': token, 'email': email}), 200
+    except Exception as e:
+        print(f"Login error: {str(e)}")
+        return jsonify({'error': 'Login failed'}), 500
+
+@app.route('/api/auth/logout', methods=['POST'])
+def logout():
+    """Logout endpoint (token cleanup handled on client)"""
+    return jsonify({'success': True, 'message': 'Logged out successfully'}), 200
 
 @app.route('/api/audio-effects', methods=['GET'])
 def list_audio_effects():
