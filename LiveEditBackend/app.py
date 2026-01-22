@@ -1,0 +1,337 @@
+from flask import Flask, request, jsonify
+from flask_cors import CORS
+import google.generativeai as genai
+import json
+import os
+import subprocess
+import tempfile
+from datetime import datetime
+from dotenv import load_dotenv
+
+load_dotenv()
+
+app = Flask(__name__)
+CORS(app)
+
+# Configure Gemini API
+API_KEY = os.getenv('GEMINI_API_KEY')
+if not API_KEY:
+    raise ValueError("GEMINI_API_KEY not found in .env file")
+
+genai.configure(api_key=API_KEY)
+model = genai.GenerativeModel("gemini-2.5-flash")
+video_model = genai.GenerativeModel("gemini-2.5-pro")
+
+@app.route('/health', methods=['GET'])
+def health_check():
+    """Health check endpoint"""
+    return jsonify({'status': 'ok', 'message': 'Backend is running'})
+
+@app.route('/api/analyze-video', methods=['POST'])
+def analyze_video():
+    """
+    Analyze a video file and generate edit suggestions
+    
+    Expected form data:
+    - video_file: The video file to analyze
+    - prompt: User's prompt for analysis
+    """
+    try:
+        if 'video_file' not in request.files:
+            return jsonify({'error': 'No video file provided'}), 400
+        
+        video_file = request.files['video_file']
+        user_prompt = request.form.get('prompt', 'Analyze this video')
+        
+        if video_file.filename == '':
+            return jsonify({'error': 'No selected file'}), 400
+        
+        # Read the video file into memory
+        print(f"Reading video file: {video_file.filename}")
+        video_data = video_file.read()
+        
+        # Determine MIME type
+        import mimetypes
+        mime_type, _ = mimetypes.guess_type(video_file.filename)
+        if not mime_type:
+            mime_type = 'video/mp4'
+        
+        print(f"Video file size: {len(video_data)} bytes, MIME type: {mime_type}")
+        
+        # Create analysis prompt
+        analysis_prompt = f"""Analyze this video thoroughly: describe key scenes with timestamps, detect actions/causes, suggest edits based on user request: {user_prompt}.
+Output strict JSON: {{"summary": "...", "key_events": [...], "edit_plan": [{{"type": "cut", "start": "00:12", "end": "00:45"}}]}}"""
+        
+        # Create inline data structure for the video
+        video_part = {
+            "mime_type": mime_type,
+            "data": video_data
+        }
+        
+        # Generate response with the video
+        print(f"Analyzing video with prompt: {user_prompt}")
+        response = video_model.generate_content([video_part, analysis_prompt])
+        
+        # Parse the response
+        response_text = ''
+        try:
+            response_text = response.text
+        except Exception as parse_error:
+            print(f"Error accessing response.text: {parse_error}")
+            if hasattr(response, 'candidates') and response.candidates and len(response.candidates) > 0:
+                candidate = response.candidates[0]
+                if (hasattr(candidate, 'content') and candidate.content and 
+                    hasattr(candidate.content, 'parts') and candidate.content.parts and
+                    len(candidate.content.parts) > 0):
+                    response_text = candidate.content.parts[0].text
+        
+        # Try to extract JSON from the response
+        try:
+            # Find JSON in the response
+            json_start = response_text.find('{')
+            json_end = response_text.rfind('}') + 1
+            if json_start != -1 and json_end > json_start:
+                json_str = response_text[json_start:json_end]
+                result = json.loads(json_str)
+            else:
+                result = {"summary": response_text, "key_events": [], "edit_plan": []}
+        except json.JSONDecodeError:
+            result = {"summary": response_text, "key_events": [], "edit_plan": []}
+        
+        return jsonify(result)
+    
+    except Exception as e:
+        print(f"Error analyzing video: {str(e)}")
+        import traceback
+        traceback.print_exc()
+        return jsonify({'error': str(e)}), 500
+    
+    except Exception as e:
+        print(f"Error analyzing video: {str(e)}")
+        return jsonify({'error': str(e)}), 500
+
+@app.route('/api/chat', methods=['POST'])
+def chat():
+    """
+    Chat endpoint for text-based interactions
+    
+    Expected JSON:
+    - message: The user's message
+    """
+    try:
+        data = request.get_json()
+        if not data or 'message' not in data:
+            return jsonify({'error': 'No message provided'}), 400
+        
+        user_message = data['message']
+        
+        # Generate response
+        response = model.generate_content(user_message)
+        
+        # Extract text from response safely
+        response_text = ''
+        
+        try:
+            # Try direct text access first
+            response_text = response.text
+        except Exception:
+            # If that fails, try alternative access
+            if hasattr(response, 'candidates') and response.candidates and len(response.candidates) > 0:
+                candidate = response.candidates[0]
+                # Check if candidate has content with parts
+                if (hasattr(candidate, 'content') and candidate.content and 
+                    hasattr(candidate.content, 'parts') and candidate.content.parts and 
+                    len(candidate.content.parts) > 0):
+                    response_text = candidate.content.parts[0].text
+                else:
+                    # Content is empty, check if response was blocked
+                    if hasattr(candidate, 'finish_reason'):
+                        response_text = f'Response was blocked or filtered (Reason: {candidate.finish_reason}). Please try a different query.'
+                    else:
+                        response_text = 'Received empty response from AI. Please try again.'
+            else:
+                response_text = 'No response from AI. Please try again.'
+        
+        return jsonify({
+            'message': response_text if response_text else 'No response generated',
+            'status': 'success'
+        })
+    
+    except Exception as e:
+        print(f"Error in chat: {str(e)}")
+        return jsonify({'error': str(e)}), 500
+
+if __name__ == '__main__':
+
+    @app.route('/api/edit-video', methods=['POST'])
+    def edit_video():
+        """
+        Apply edits to a video based on AI suggestions
+    
+        Expected form data:
+        - video_file: The video file to edit
+        - edit_plan: JSON string containing edit instructions
+        - audio_file (optional): Audio file to add to video
+        - audio_start (optional): Timestamp to start audio (HH:MM:SS or MM:SS)
+        - audio_duck_db (optional): Reduce original audio by X dB (default 0)
+        """
+        try:
+            if 'video_file' not in request.files:
+                return jsonify({'error': 'No video file provided'}), 400
+        
+            video_file = request.files['video_file']
+            edit_plan_str = request.form.get('edit_plan', '[]')
+            audio_file = request.files.get('audio_file', None)
+            audio_start = request.form.get('audio_start', '00:00')
+            audio_duck_db = float(request.form.get('audio_duck_db', '0'))
+        
+            if video_file.filename == '':
+                return jsonify({'error': 'No selected file'}), 400
+        
+            # Parse edit plan
+            try:
+                edit_plan = json.loads(edit_plan_str)
+            except json.JSONDecodeError:
+                return jsonify({'error': 'Invalid edit plan JSON'}), 400
+        
+            # Save original video to temp file
+            temp_dir = tempfile.mkdtemp()
+            input_path = os.path.join(temp_dir, 'input_video.mp4')
+            output_path = os.path.join(temp_dir, 'output_video.mp4')
+            audio_path = None
+        
+            video_file.save(input_path)
+            
+            # Save audio file if provided
+            if audio_file:
+                audio_path = os.path.join(temp_dir, 'effect_audio.mp3')
+                audio_file.save(audio_path)
+        
+            # Apply edits using ffmpeg
+            if not edit_plan or len(edit_plan) == 0:
+                # No edits, just return original
+                if audio_path:
+                    # Add audio to original video
+                    cmd = build_ffmpeg_with_audio(input_path, output_path, audio_path, audio_start, audio_duck_db)
+                    result = subprocess.run(cmd, capture_output=True, text=True)
+                    if result.returncode != 0:
+                        print(f"FFmpeg error: {result.stderr}")
+                        return jsonify({'error': f'Audio mixing failed: {result.stderr}'}), 500
+                else:
+                    os.rename(input_path, output_path)
+            else:
+                # Build ffmpeg filter for cuts and edits
+                filter_parts = []
+            
+                for i, edit in enumerate(edit_plan):
+                    edit_type = edit.get('type', '')
+                
+                    if edit_type == 'cut':
+                        # Remove a segment
+                        start = edit.get('start', '00:00')
+                        end = edit.get('end', '00:00')
+                    
+                        # Convert time format MM:SS to seconds
+                        start_sec = time_to_seconds(start)
+                        end_sec = time_to_seconds(end)
+                    
+                        filter_parts.append(f"between(t,{start_sec},{end_sec})")
+            
+                if filter_parts:
+                    # Create filter to remove segments
+                    filter_expr = "select='not(" + "+".join(filter_parts) + ")',setpts=N/FRAME_RATE/TB"
+                
+                    # First pass: apply cuts only
+                    temp_cut_path = os.path.join(temp_dir, 'cut_video.mp4')
+                    cmd = [
+                        'ffmpeg', '-i', input_path,
+                        '-vf', filter_expr,
+                        '-af', "aselect='not(" + "+".join(filter_parts) + ")',asetpts=N/SR/TB",
+                        '-y', temp_cut_path
+                    ]
+                    
+                    print(f"Running ffmpeg command for cuts: {' '.join(cmd)}")
+                    result = subprocess.run(cmd, capture_output=True, text=True)
+                    if result.returncode != 0:
+                        print(f"FFmpeg error: {result.stderr}")
+                        return jsonify({'error': f'Video editing failed: {result.stderr}'}), 500
+                    
+                    # Second pass: add audio if provided
+                    if audio_path:
+                        cmd = build_ffmpeg_with_audio(temp_cut_path, output_path, audio_path, audio_start, audio_duck_db)
+                    else:
+                        cmd = ['ffmpeg', '-i', temp_cut_path, '-c', 'copy', '-y', output_path]
+                else:
+                    # No valid cuts, copy original
+                    if audio_path:
+                        cmd = build_ffmpeg_with_audio(input_path, output_path, audio_path, audio_start, audio_duck_db)
+                    else:
+                        cmd = ['ffmpeg', '-i', input_path, '-c', 'copy', '-y', output_path]
+            
+                print(f"Running ffmpeg command: {' '.join(cmd)}")
+                result = subprocess.run(cmd, capture_output=True, text=True)
+            
+                if result.returncode != 0:
+                    print(f"FFmpeg error: {result.stderr}")
+                    return jsonify({'error': f'Video editing failed: {result.stderr}'}), 500
+        
+            # Read edited video
+            with open(output_path, 'rb') as f:
+                edited_video = f.read()
+        
+            # Clean up temp files
+            import shutil
+            shutil.rmtree(temp_dir)
+        
+            # Return edited video
+            from flask import send_file
+            import io
+            return send_file(
+                io.BytesIO(edited_video),
+                mimetype='video/mp4',
+                as_attachment=True,
+                download_name=f'edited_{datetime.now().strftime("%Y%m%d_%H%M%S")}.mp4'
+            )
+    
+        except Exception as e:
+            print(f"Error editing video: {str(e)}")
+            import traceback
+            traceback.print_exc()
+            return jsonify({'error': str(e)}), 500
+
+    def build_ffmpeg_with_audio(input_video, output_path, audio_path, audio_start, audio_duck_db):
+        """Build ffmpeg command to mix audio into video with optional ducking"""
+        audio_start_sec = time_to_seconds(audio_start)
+        
+        # Create audio filters: delay the audio and duck original if needed
+        if audio_duck_db < 0:
+            # Original audio volume reduction
+            volume_filter = f"volume={10**(audio_duck_db/20):.2f}"
+            audio_filter = f"[0:a]{volume_filter}[orig_audio];[1:a]adelay={audio_start_sec*1000}|{audio_start_sec*1000}[effect_audio];[orig_audio][effect_audio]amix=inputs=2:duration=first[audio]"
+        else:
+            # No ducking
+            audio_filter = f"[1:a]adelay={audio_start_sec*1000}|{audio_start_sec*1000}[effect_audio];[0:a][effect_audio]amix=inputs=2:duration=first[audio]"
+        
+        cmd = [
+            'ffmpeg',
+            '-i', input_video,
+            '-i', audio_path,
+            '-filter_complex', audio_filter,
+            '-map', '0:v:0',
+            '-map', '[audio]',
+            '-c:v', 'copy',
+            '-c:a', 'aac',
+            '-y', output_path
+        ]
+        return cmd
+
+    def time_to_seconds(time_str):
+        """Convert MM:SS or HH:MM:SS to seconds"""
+        parts = time_str.split(':')
+        if len(parts) == 2:
+            return int(parts[0]) * 60 + int(parts[1])
+        elif len(parts) == 3:
+            return int(parts[0]) * 3600 + int(parts[1]) * 60 + int(parts[2])
+        return 0
+
+    app.run(debug=True, host='0.0.0.0', port=5000)
