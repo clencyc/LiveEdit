@@ -1,4 +1,5 @@
 import React, { useEffect, useState } from 'react';
+import AnimatedBackground from './AnimatedBackground';
 
 interface LandingPageProps {
   onStart: () => void;
@@ -7,13 +8,13 @@ interface LandingPageProps {
 const slides = [
   {
     title: 'Live Edit',
-    subtitle: 'CINEMATIC + AI + VR',
+    subtitle: 'CINEMATIC + AI',
     accent: 'Real-time storycraft',
   },
   {
-    title: 'Spatial Vision',
-    subtitle: 'VR-first canvas',
-    accent: 'Frame-perfect presence',
+    title: 'Precision Editing',
+    subtitle: 'Cut, enhance, and mix',
+    accent: 'Frame-perfect control',
   },
   {
     title: 'Reactive Audio',
@@ -42,7 +43,8 @@ const LandingPage: React.FC<LandingPageProps> = ({ onStart }) => {
   const gradient = gradients[index];
 
   return (
-    <div className="min-h-screen bg-[#050505] text-white overflow-hidden relative">
+    <div className="min-h-screen bg-[#050505] text-white overflow-hidden relative pb-24">
+      <AnimatedBackground />
       <div
         className="absolute inset-0 transition-all duration-700"
         style={{ backgroundImage: gradient, filter: 'blur(18px)', opacity: 0.9 }}
@@ -57,15 +59,20 @@ const LandingPage: React.FC<LandingPageProps> = ({ onStart }) => {
           </div>
           <div>
             <div className="text-sm uppercase tracking-[0.3em] text-neutral-400">Live Edit</div>
-            <div className="text-lg font-bold text-white tracking-tight">VR Studio</div>
+            <div className="text-lg font-bold text-white tracking-tight">AI Video Editor</div>
           </div>
         </div>
-        <div className="text-[11px] uppercase tracking-[0.25em] text-neutral-500">Cinematic AI Pipeline</div>
+        <button
+          onClick={onStart}
+          className="px-6 py-2 bg-[#00ff41] text-black font-bold uppercase text-[11px] tracking-[0.25em] shadow-[0_10px_40px_rgba(0,255,65,0.45)] hover:bg-[#00e03a] transition-all"
+        >
+          Get Started
+        </button>
       </header>
 
-      <main className="relative z-10 flex flex-col items-center text-center px-6 mt-16">
+      <main className="relative z-20 flex flex-col items-center text-center px-6 mt-16 pb-40">
         <div className="inline-flex items-center gap-2 px-4 py-2 border border-[#00ff41] bg-white/5 text-[11px] uppercase tracking-[0.35em] text-[#00ff41]">
-          VR + AI + EDIT
+          AI VIDEO EDITING
         </div>
 
         <h1 className="mt-6 text-4xl sm:text-5xl md:text-6xl font-bold tracking-tight text-white drop-shadow-[0_8px_30px_rgba(0,0,0,0.45)]">
@@ -93,16 +100,11 @@ const LandingPage: React.FC<LandingPageProps> = ({ onStart }) => {
           </div>
         </div>
 
-        <div className="mt-12 flex flex-col sm:flex-row items-center gap-4">
-          <button
-            onClick={onStart}
-            className="px-8 py-3 bg-[#00ff41] text-black font-bold uppercase tracking-[0.25em] text-xs shadow-[0_10px_40px_rgba(0,255,65,0.45)] hover:bg-[#00e03a] transition-all"
-          >
-            Get Started
-          </button>
-          <div className="text-neutral-500 text-sm uppercase tracking-[0.25em]">Enter the Editor</div>
-        </div>
       </main>
+
+      <footer className="relative z-0 mt-24">
+        <div className="fixed bottom-0 left-0 right-0 h-16 w-full bg-neutral-900 border-t border-neutral-800 pointer-events-none" />
+      </footer>
     </div>
   );
 };
