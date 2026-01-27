@@ -40,3 +40,12 @@ dist/
 *.tmp
 temp/
 tmp/
+
+# Video/media files (generated outputs)
+*.mp4
+*.avi
+*.mov
+*.mkv
+*.webm
+*.flv
+dump.rdb
