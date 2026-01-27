@@ -22,7 +22,7 @@ export const PaymentCallback: React.FC = () => {
 
   const verifyPayment = async (reference: string) => {
     try {
-      const response = await fetch(`http://localhost:5000/api/payments/verify/${reference}`);
+      const response = await fetch(`${import.meta.env.VITE_BACKEND_URL || 'https://liveedit.onrender.com'}/api/payments/verify/${reference}`);
       const data = await response.json();
 
       if (response.ok && data.success) {

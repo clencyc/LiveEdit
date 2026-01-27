@@ -27,7 +27,7 @@ export const PaymentModal: React.FC<PaymentModalProps> = ({
 
     try {
       // Initialize payment
-      const response = await fetch('http://localhost:5000/api/payments/initialize', {
+      const response = await fetch(`${import.meta.env.VITE_BACKEND_URL || 'https://liveedit.onrender.com'}/api/payments/initialize`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',

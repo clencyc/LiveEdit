@@ -2,7 +2,7 @@
 import { GoogleGenAI } from "@google/genai";
 import { VideoConfig } from "../types";
 
-const BACKEND_URL = import.meta.env.VITE_BACKEND_URL || 'http://localhost:5000';
+const BACKEND_URL = import.meta.env.VITE_BACKEND_URL || 'https://liveedit.onrender.com';
 
 // Note: process.env.API_KEY is pre-configured
 export const getAiClient = () => new GoogleGenAI({ apiKey: import.meta.env.VITE_GEMINI_API_KEY });

@@ -77,7 +77,7 @@ const App: React.FC = () => {
   const handleSubscribe = async (planId: number) => {
     // Fetch plan details for modal
     try {
-      const response = await fetch('http://localhost:5000/api/payments/plans');
+      const response = await fetch(`${import.meta.env.VITE_BACKEND_URL || 'https://liveedit.onrender.com'}/api/payments/plans`);
       const plans = await response.json();
       const plan = plans.find((p: any) => p.id === planId);
       
