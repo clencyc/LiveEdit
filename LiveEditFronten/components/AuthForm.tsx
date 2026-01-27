@@ -42,7 +42,7 @@ const AuthForm: React.FC<AuthFormProps> = ({ onAuthSuccess }) => {
 
     setLoading(true);
     try {
-      const backendUrl = import.meta.env.VITE_BACKEND_URL || 'http://localhost:5000';
+      const backendUrl = import.meta.env.VITE_BACKEND_URL || 'https://liveedit.onrender.com';
       const endpoint = isSignup ? '/api/auth/signup' : '/api/auth/login';
       
       const response = await fetch(`${backendUrl}${endpoint}`, {
