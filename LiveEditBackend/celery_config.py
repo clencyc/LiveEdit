@@ -36,4 +36,7 @@ celery_app.conf.update(
     enable_utc=True,
     broker_use_ssl=broker_use_ssl,
     redis_backend_use_ssl=redis_backend_use_ssl,
+    broker_connection_retry_on_startup=True,
+    broker_heartbeat=int(os.getenv("CELERY_BROKER_HEARTBEAT", "30")),
+    worker_prefetch_multiplier=int(os.getenv("CELERY_PREFETCH", "1")),
 )
