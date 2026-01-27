@@ -125,3 +125,84 @@ export async function editVideoWithBackend(
     throw error;
   }
 }
+
+export async function generateImageWithBackend(prompt: string): Promise<{ dataUrl: string; mimeType: string; }>
+{
+  const backendUrl = import.meta.env.VITE_BACKEND_URL || 'http://localhost:5000';
+  const response = await fetch(`${backendUrl}/api/generate-image`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ prompt })
+  });
+
+  if (!response.ok) {
+    const err = await response.json().catch(() => ({}));
+    throw new Error(err.error || 'Image generation failed');
+  }
+
+  const data = await response.json();
+  const mime = data.mime_type || 'image/png';
+  const dataUrl = `data:${mime};base64,${data.image_base64}`;
+  return { dataUrl, mimeType: mime };
+}
+
+export interface VideoJobStatus {
+  job_id: string;
+  job_type: string;
+  status: string;
+  progress?: number;
+  message?: string;
+  result_path?: string;
+  result_json?: any;
+}
+
+export interface QueueMultiEditResponse {
+  job_id: string;
+  status: string;
+  job_type: string;
+  message?: string;
+}
+
+export async function queueMultiEdit(
+  videos: File[],
+  prompt: string,
+  options?: { audioFile?: File; audioStart?: string; audioDuckDb?: number }
+): Promise<QueueMultiEditResponse> {
+  if (!videos.length) throw new Error('At least one video is required');
+  const formData = new FormData();
+  videos.forEach((v) => formData.append('video_files', v));
+  formData.append('prompt', prompt);
+  if (options?.audioFile) {
+    formData.append('audio_file', options.audioFile);
+    if (options.audioStart) formData.append('audio_start', options.audioStart);
+    if (options.audioDuckDb !== undefined) formData.append('audio_duck_db', String(options.audioDuckDb));
+  }
+
+  const res = await fetch(`${BACKEND_URL}/api/edit-multi`, {
+    method: 'POST',
+    body: formData
+  });
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({}));
+    throw new Error(err.error || res.statusText);
+  }
+  return res.json();
+}
+
+export async function fetchVideoJob(jobId: string): Promise<VideoJobStatus> {
+  const res = await fetch(`${BACKEND_URL}/api/video-jobs/${jobId}`);
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({}));
+    throw new Error(err.error || res.statusText);
+  }
+  return res.json();
+}
+
+export async function downloadVideoJob(jobId: string): Promise<Blob> {
+  const res = await fetch(`${BACKEND_URL}/api/video-jobs/${jobId}/download`);
+  if (!res.ok) {
+    const errText = await res.text();
+    throw new Error(errText || res.statusText);
+  }
+  return res.blob();
+}

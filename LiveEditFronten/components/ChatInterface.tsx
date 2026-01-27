@@ -2,6 +2,7 @@
 import React, { useState, useRef, useEffect } from 'react';
 import { getAiClient, chatWithBackend, analyzeVideoWithBackend, editVideoWithBackend } from '../services/gemini';
 import { ChatMessage, MediaAsset } from '../types';
+import CreativePulse from './CreativePulse';
 
 interface ChatInterfaceProps {
   onAddAsset: (asset: MediaAsset) => void
@@ -356,6 +357,8 @@ const ChatInterface: React.FC<ChatInterfaceProps> = ({ onAddAsset }) => {
           className="flex-1 overflow-y-auto space-y-8 px-6 pt-6 pb-4 pr-2 custom-scrollbar"
           ref={scrollRef}
         >
+          <CreativePulse onAddAsset={onAddAsset} />
+
           {messages.map((msg) => (
             <div
               key={msg.id}

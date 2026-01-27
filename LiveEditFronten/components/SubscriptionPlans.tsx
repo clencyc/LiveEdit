@@ -49,7 +49,7 @@ export const SubscriptionPlans: React.FC<SubscriptionPlansProps> = ({
   };
 
   const formatPrice = (price: number, currency: string) => {
-    return new Intl.NumberFormat('en-NG', {
+    return new Intl.NumberFormat('en-KE', {
       style: 'currency',
       currency: currency,
       minimumFractionDigits: 0

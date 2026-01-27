@@ -12,6 +12,10 @@ from psycopg2.extras import RealDictCursor
 import hashlib
 import hmac
 import secrets
+from google.genai import Client
+from werkzeug.utils import secure_filename
+
+from video_tasks import analyze_video_task, edit_video_task, edit_multi_task
 
 load_dotenv()
 
@@ -28,10 +32,21 @@ model = genai.GenerativeModel("gemini-2.5-flash")
 # Revert to supported video analysis model
 video_model = genai.GenerativeModel("gemini-2.5-pro")
 
+# Image generation model
+IMAGE_MODEL_ID = os.getenv('GEMINI_IMAGE_MODEL', 'imagen-3.0-generate-001')
+
+# Helper to get AI client for image generation
+def getAiClient():
+    return Client(api_key=API_KEY)
+
 # Database connections
 DATABASE_URL = os.getenv('DATABASE_URL')
 if not DATABASE_URL:
     raise ValueError("DATABASE_URL not found in .env file")
+
+# Where uploaded assets for jobs are stored (shared between API and Celery workers)
+JOB_WORKDIR = os.getenv('JOB_WORKDIR', '/tmp/liveedit_jobs')
+os.makedirs(JOB_WORKDIR, exist_ok=True)
 
 def get_db_connection():
     """Create a new database connection"""
@@ -69,6 +84,11 @@ def init_auth_table():
                 subscription_end_date TIMESTAMP
             )
         """)
+
+        # Ensure subscription columns exist for legacy tables
+        cur.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS subscription_status VARCHAR(50) DEFAULT 'free'")
+        cur.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS subscription_plan VARCHAR(50)")
+        cur.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS subscription_end_date TIMESTAMP")
         conn.commit()
         cur.close()
         conn.close()
@@ -87,7 +107,7 @@ def init_payment_tables():
                 id SERIAL PRIMARY KEY,
                 name VARCHAR(100) UNIQUE NOT NULL,
                 price DECIMAL(10, 2) NOT NULL,
-                currency VARCHAR(3) DEFAULT 'NGN',
+                currency VARCHAR(3) DEFAULT 'KES',
                 duration_days INTEGER NOT NULL,
                 features JSONB,
                 is_active BOOLEAN DEFAULT true,
@@ -102,7 +122,7 @@ def init_payment_tables():
                 user_id INTEGER REFERENCES users(id) ON DELETE CASCADE,
                 reference VARCHAR(255) UNIQUE NOT NULL,
                 amount DECIMAL(10, 2) NOT NULL,
-                currency VARCHAR(3) DEFAULT 'NGN',
+                currency VARCHAR(3) DEFAULT 'KES',
                 status VARCHAR(50) DEFAULT 'pending',
                 plan_id INTEGER REFERENCES subscription_plans(id),
                 paystack_reference VARCHAR(255),
@@ -111,13 +131,11 @@ def init_payment_tables():
             )
         """)
         
-        # Insert default subscription plans
+        # Insert default subscription plan
         cur.execute("""
-            INSERT INTO subscription_plans (name, price, duration_days, features)
+            INSERT INTO subscription_plans (name, price, currency, duration_days, features)
             VALUES 
-                ('Basic', 2000.00, 30, '{"ai_generations": 50, "storage_gb": 5, "video_exports": "720p"}'),
-                ('Pro', 5000.00, 30, '{"ai_generations": 200, "storage_gb": 20, "video_exports": "1080p", "priority_support": true}'),
-                ('Premium', 10000.00, 30, '{"ai_generations": -1, "storage_gb": 100, "video_exports": "4K", "priority_support": true, "api_access": true}')
+                ('Basic', 100.00, 'KES', 30, '{"ai_generations": 100, "storage_gb": 10, "video_exports": "1080p", "priority_support": true}')
             ON CONFLICT (name) DO NOTHING
         """)
         
@@ -127,9 +145,42 @@ def init_payment_tables():
     except Exception as e:
         print(f"Warning: Could not initialize payment tables: {str(e)}")
 
+def init_video_job_table():
+    """Create table to track async video jobs"""
+    try:
+        conn = get_db_connection()
+        cur = conn.cursor()
+        cur.execute(
+            """
+            CREATE TABLE IF NOT EXISTS video_jobs (
+                job_id VARCHAR(64) PRIMARY KEY,
+                job_type VARCHAR(32) NOT NULL,
+                status VARCHAR(32) NOT NULL DEFAULT 'queued',
+                progress NUMERIC(5,2) DEFAULT 0,
+                message TEXT,
+                result_path TEXT,
+                result_json JSONB,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+            """
+        )
+        cur.execute(
+            """
+            CREATE INDEX IF NOT EXISTS idx_video_jobs_created_at
+            ON video_jobs (created_at DESC)
+            """
+        )
+        conn.commit()
+        cur.close()
+        conn.close()
+    except Exception as e:
+        print(f"Warning: Could not initialize video_jobs table: {str(e)}")
+
 # Initialize auth table on startup
 init_auth_table()
 init_payment_tables()
+init_video_job_table()
 
 @app.route('/health', methods=['GET'])
 def health_check():
@@ -342,97 +393,46 @@ def analyze_video():
     try:
         if 'video_file' not in request.files:
             return jsonify({'error': 'No video file provided'}), 400
-        
+
         video_file = request.files['video_file']
         user_prompt = request.form.get('prompt', 'Analyze this video')
-        
+
         if video_file.filename == '':
             return jsonify({'error': 'No selected file'}), 400
-        
-        # Read the video file into memory
-        print(f"Reading video file: {video_file.filename}")
-        video_data = video_file.read()
-        
-        # Determine MIME type
-        import mimetypes
-        mime_type, _ = mimetypes.guess_type(video_file.filename)
-        if not mime_type:
-            mime_type = 'video/mp4'
-        
-        print(f"Video file size: {len(video_data)} bytes, MIME type: {mime_type}")
-        
-        # Create analysis prompt
-        analysis_prompt = f"""You are viewing a video file. You MUST analyze the actual video content frame-by-frame.
 
-USER REQUEST: {user_prompt}
+        job_id = secrets.token_hex(16)
+        job_dir = os.path.join(JOB_WORKDIR, job_id)
+        os.makedirs(job_dir, exist_ok=True)
+        filename = secure_filename(video_file.filename) or 'video.mp4'
+        video_path = os.path.join(job_dir, filename)
+        video_file.save(video_path)
 
-YOUR TASK:
-1. Watch the video and identify the exact timestamps where requested actions occur
-2. Generate a concrete ffmpeg-compatible edit plan
-3. Return ONLY executable operations, NO instructions or advice
+        conn = get_db_connection()
+        cur = conn.cursor()
+        cur.execute(
+            """
+            INSERT INTO video_jobs (job_id, job_type, status, progress, message)
+            VALUES (%s, %s, %s, %s, %s)
+            """,
+            (job_id, 'analyze', 'queued', 0, 'Queued for analysis')
+        )
+        conn.commit()
+        cur.close()
+        conn.close()
 
-Example - if user says "add sound when I smile":
-- Detect the frame where the person smiles
-- Return: {{"type": "audio_cue", "time": "00:02.5", "description": "smile detected"}}
+        analyze_video_task.delay(job_id, video_path, user_prompt)
 
-Example - if user says "trim first 2 seconds":
-- Return: {{"type": "cut", "start": "00:00", "end": "00:02", "description": "remove intro"}}
+        return jsonify({
+            'job_id': job_id,
+            'status': 'queued',
+            'job_type': 'analyze',
+            'message': 'Video analysis queued'
+        }), 202
 
-OUTPUT FORMAT (strict JSON only):
-{{
-  "summary": "what you see in the video (person, actions, timing)",
-  "key_events": [{{"time": "00:01.2", "description": "person looks at camera"}}, {{"time": "00:02.5", "description": "person smiles"}}],
-  "edit_plan": [{{"type": "cut", "start": "00:00", "end": "00:02"}}, {{"type": "audio_cue", "time": "00:02.5", "description": "add electronic pulse at smile"}}]
-}}
-
-CRITICAL: Base all timestamps on what you actually see in the video. Use MM:SS.MS format."""
-        
-        # Create inline data structure for the video
-        video_part = {
-            "mime_type": mime_type,
-            "data": video_data
-        }
-        
-        # Generate response with the video
-        print(f"Analyzing video with prompt: {user_prompt}")
-        response = video_model.generate_content([video_part, analysis_prompt])
-        
-        # Parse the response
-        response_text = ''
-        try:
-            response_text = response.text
-        except Exception as parse_error:
-            print(f"Error accessing response.text: {parse_error}")
-            if hasattr(response, 'candidates') and response.candidates and len(response.candidates) > 0:
-                candidate = response.candidates[0]
-                if (hasattr(candidate, 'content') and candidate.content and 
-                    hasattr(candidate.content, 'parts') and candidate.content.parts and
-                    len(candidate.content.parts) > 0):
-                    response_text = candidate.content.parts[0].text
-        
-        # Try to extract JSON from the response
-        try:
-            # Find JSON in the response
-            json_start = response_text.find('{')
-            json_end = response_text.rfind('}') + 1
-            if json_start != -1 and json_end > json_start:
-                json_str = response_text[json_start:json_end]
-                result = json.loads(json_str)
-            else:
-                result = {"summary": response_text, "key_events": [], "edit_plan": []}
-        except json.JSONDecodeError:
-            result = {"summary": response_text, "key_events": [], "edit_plan": []}
-        
-        return jsonify(result)
-    
     except Exception as e:
-        print(f"Error analyzing video: {str(e)}")
+        print(f"Error queuing video analysis: {str(e)}")
         import traceback
         traceback.print_exc()
-        return jsonify({'error': str(e)}), 500
-    
-    except Exception as e:
-        print(f"Error analyzing video: {str(e)}")
         return jsonify({'error': str(e)}), 500
 
 @app.route('/api/chat', methods=['POST'])
@@ -503,137 +503,68 @@ if __name__ == '__main__':
         try:
             if 'video_file' not in request.files:
                 return jsonify({'error': 'No video file provided'}), 400
-        
+
             video_file = request.files['video_file']
             edit_plan_str = request.form.get('edit_plan', '[]')
             audio_file = request.files.get('audio_file', None)
             audio_start = request.form.get('audio_start', '00:00')
             audio_duck_db = float(request.form.get('audio_duck_db', '0'))
-        
+
             if video_file.filename == '':
                 return jsonify({'error': 'No selected file'}), 400
-        
-            # Parse edit plan
+
             try:
                 edit_plan = json.loads(edit_plan_str)
             except json.JSONDecodeError:
                 return jsonify({'error': 'Invalid edit plan JSON'}), 400
 
-            print(f"EDIT_PLAN: {edit_plan}")
-
-            # If audio cues exist but no audio provided, bail early to avoid silent no-op
             has_audio_cue = any(isinstance(e, dict) and e.get('type') == 'audio_cue' for e in edit_plan or [])
             if has_audio_cue and audio_file is None:
                 return jsonify({'error': 'Audio cue requested but no audio file provided. Select/import an audio effect before rendering.'}), 400
 
-            # If an audio_cue is present, use its time as start unless user provided one
             if edit_plan:
                 cue_times = [e.get('time') for e in edit_plan if isinstance(e, dict) and e.get('type') == 'audio_cue' and e.get('time')]
                 if cue_times and audio_start == '00:00':
                     audio_start = cue_times[0]
-        
-            # Save original video to temp file
-            temp_dir = tempfile.mkdtemp()
-            input_path = os.path.join(temp_dir, 'input_video.mp4')
-            output_path = os.path.join(temp_dir, 'output_video.mp4')
+
+            job_id = secrets.token_hex(16)
+            job_dir = os.path.join(JOB_WORKDIR, job_id)
+            os.makedirs(job_dir, exist_ok=True)
+
+            video_filename = secure_filename(video_file.filename) or 'input_video.mp4'
+            video_path = os.path.join(job_dir, video_filename)
+            video_file.save(video_path)
+
             audio_path = None
-        
-            video_file.save(input_path)
-            
-            # Save audio file if provided
             if audio_file:
-                audio_path = os.path.join(temp_dir, 'effect_audio.mp3')
+                audio_filename = secure_filename(audio_file.filename) or 'effect_audio.mp3'
+                audio_path = os.path.join(job_dir, audio_filename)
                 audio_file.save(audio_path)
-        
-            # Apply edits using ffmpeg
-            if not edit_plan or len(edit_plan) == 0:
-                # No edits, just return original
-                if audio_path:
-                    # Add audio to original video
-                    cmd = build_ffmpeg_with_audio(input_path, output_path, audio_path, audio_start, audio_duck_db)
-                    result = subprocess.run(cmd, capture_output=True, text=True)
-                    if result.returncode != 0:
-                        print(f"FFmpeg error: {result.stderr}")
-                        return jsonify({'error': f'Audio mixing failed: {result.stderr}'}), 500
-                else:
-                    os.rename(input_path, output_path)
-            else:
-                # Build ffmpeg filter for cuts and edits
-                filter_parts = []
-            
-                for i, edit in enumerate(edit_plan):
-                    edit_type = edit.get('type', '')
-                
-                    if edit_type == 'cut':
-                        # Remove a segment
-                        start = edit.get('start', '00:00')
-                        end = edit.get('end', '00:00')
-                    
-                        # Convert time format MM:SS to seconds
-                        start_sec = time_to_seconds(start)
-                        end_sec = time_to_seconds(end)
-                    
-                        filter_parts.append(f"between(t,{start_sec},{end_sec})")
-                    # Non-cut edits (enhancement/audio_cue) are currently no-ops for video track
-            
-                if filter_parts:
-                    # Create filter to remove segments
-                    filter_expr = "select='not(" + "+".join(filter_parts) + ")',setpts=N/FRAME_RATE/TB"
-                
-                    # First pass: apply cuts only
-                    temp_cut_path = os.path.join(temp_dir, 'cut_video.mp4')
-                    cmd = [
-                        'ffmpeg', '-i', input_path,
-                        '-vf', filter_expr,
-                        '-af', "aselect='not(" + "+".join(filter_parts) + ")',asetpts=N/SR/TB",
-                        '-y', temp_cut_path
-                    ]
-                    
-                    print(f"Running ffmpeg command for cuts: {' '.join(cmd)}")
-                    result = subprocess.run(cmd, capture_output=True, text=True)
-                    if result.returncode != 0:
-                        print(f"FFmpeg error: {result.stderr}")
-                        return jsonify({'error': f'Video editing failed: {result.stderr}'}), 500
-                    
-                    # Second pass: add audio if provided
-                    if audio_path:
-                        cmd = build_ffmpeg_with_audio(temp_cut_path, output_path, audio_path, audio_start, audio_duck_db)
-                    else:
-                        cmd = ['ffmpeg', '-i', temp_cut_path, '-c', 'copy', '-y', output_path]
-                else:
-                    # No valid cuts, copy original
-                    if audio_path:
-                        cmd = build_ffmpeg_with_audio(input_path, output_path, audio_path, audio_start, audio_duck_db)
-                    else:
-                        cmd = ['ffmpeg', '-i', input_path, '-c', 'copy', '-y', output_path]
-            
-                print(f"Running ffmpeg command: {' '.join(cmd)}")
-                result = subprocess.run(cmd, capture_output=True, text=True)
-            
-                if result.returncode != 0:
-                    print(f"FFmpeg error: {result.stderr}")
-                    return jsonify({'error': f'Video editing failed: {result.stderr}'}), 500
-        
-            # Read edited video
-            with open(output_path, 'rb') as f:
-                edited_video = f.read()
-        
-            # Clean up temp files
-            import shutil
-            shutil.rmtree(temp_dir)
-        
-            # Return edited video
-            from flask import send_file
-            import io
-            return send_file(
-                io.BytesIO(edited_video),
-                mimetype='video/mp4',
-                as_attachment=True,
-                download_name=f'edited_{datetime.now().strftime("%Y%m%d_%H%M%S")}.mp4'
+
+            conn = get_db_connection()
+            cur = conn.cursor()
+            cur.execute(
+                """
+                INSERT INTO video_jobs (job_id, job_type, status, progress, message)
+                VALUES (%s, %s, %s, %s, %s)
+                """,
+                (job_id, 'edit', 'queued', 0, 'Queued for rendering')
             )
-    
+            conn.commit()
+            cur.close()
+            conn.close()
+
+            edit_video_task.delay(job_id, video_path, edit_plan, audio_path, audio_start, audio_duck_db)
+
+            return jsonify({
+                'job_id': job_id,
+                'status': 'queued',
+                'job_type': 'edit',
+                'message': 'Video render queued'
+            }), 202
+
         except Exception as e:
-            print(f"Error editing video: {str(e)}")
+            print(f"Error queuing video edit: {str(e)}")
             import traceback
             traceback.print_exc()
             return jsonify({'error': str(e)}), 500
@@ -682,9 +613,148 @@ if __name__ == '__main__':
 
         return 0.0
 
-    app.run(debug=True, host='0.0.0.0', port=5000)
-
 # Paystack payment endpoints
+
+@app.route('/api/video-jobs/<job_id>', methods=['GET'])
+def get_video_job(job_id):
+    """Check the status of a queued video job"""
+    try:
+        conn = get_db_connection()
+        cur = conn.cursor()
+        cur.execute(
+            """
+            SELECT job_id, job_type, status, progress, message, result_path, result_json, created_at, updated_at
+            FROM video_jobs
+            WHERE job_id = %s
+            """,
+            (job_id,)
+        )
+        job = cur.fetchone()
+        cur.close()
+        conn.close()
+
+        if not job:
+            return jsonify({'error': 'Job not found'}), 404
+
+        job_dict = dict(job)
+        if job_dict.get('result_json') and isinstance(job_dict['result_json'], str):
+            try:
+                job_dict['result_json'] = json.loads(job_dict['result_json'])
+            except json.JSONDecodeError:
+                pass
+
+        return jsonify(job_dict), 200
+
+    except Exception as e:
+        print(f"Error fetching job status: {str(e)}")
+        return jsonify({'error': 'Failed to fetch job status'}), 500
+
+
+@app.route('/api/video-jobs/<job_id>/download', methods=['GET'])
+def download_video_job(job_id):
+    """Download the rendered video for a completed job"""
+    try:
+        conn = get_db_connection()
+        cur = conn.cursor()
+        cur.execute(
+            """
+            SELECT result_path, status
+            FROM video_jobs
+            WHERE job_id = %s
+            """,
+            (job_id,)
+        )
+        job = cur.fetchone()
+        cur.close()
+        conn.close()
+
+        if not job:
+            return jsonify({'error': 'Job not found'}), 404
+
+        if job['status'] != 'succeeded' or not job.get('result_path'):
+            return jsonify({'error': 'Result not ready'}), 400
+
+        result_path = job['result_path']
+        if not os.path.exists(result_path):
+            return jsonify({'error': 'Result file missing'}), 404
+
+        return send_file(result_path, mimetype='video/mp4', as_attachment=True, download_name=os.path.basename(result_path))
+
+    except Exception as e:
+        print(f"Error downloading job result: {str(e)}")
+        return jsonify({'error': 'Failed to download result'}), 500
+
+@app.route('/api/edit-multi', methods=['POST'])
+def edit_multi():
+    """Queue multi-clip edit (up to 3 videos) with instructions-driven plan"""
+    try:
+        video_files = request.files.getlist('video_files')
+        if not video_files:
+            return jsonify({'error': 'No video files provided'}), 400
+        if len(video_files) > 3:
+            return jsonify({'error': 'Maximum of 3 video files allowed'}), 400
+
+        prompt = (request.form.get('prompt') or '').strip()
+        if not prompt:
+            return jsonify({'error': 'Prompt is required'}), 400
+
+        audio_file = request.files.get('audio_file')
+        audio_start = request.form.get('audio_start', '00:00')
+        try:
+            audio_duck_db = float(request.form.get('audio_duck_db', '0'))
+        except ValueError:
+            audio_duck_db = 0.0
+
+        job_id = secrets.token_hex(16)
+        job_dir = os.path.join(JOB_WORKDIR, job_id)
+        os.makedirs(job_dir, exist_ok=True)
+
+        saved_paths = []
+        for idx, vf in enumerate(video_files):
+            if not vf or vf.filename == '':
+                continue
+            filename = secure_filename(vf.filename) or f'clip_{idx}.mp4'
+            path = os.path.join(job_dir, filename)
+            vf.save(path)
+            saved_paths.append(path)
+
+        if not saved_paths:
+            return jsonify({'error': 'No valid video files provided'}), 400
+
+        audio_path = None
+        if audio_file and audio_file.filename:
+            audio_filename = secure_filename(audio_file.filename) or 'effect_audio.mp3'
+            audio_path = os.path.join(job_dir, audio_filename)
+            audio_file.save(audio_path)
+
+        conn = get_db_connection()
+        cur = conn.cursor()
+        cur.execute(
+            """
+            INSERT INTO video_jobs (job_id, job_type, status, progress, message)
+            VALUES (%s, %s, %s, %s, %s)
+            """,
+            (job_id, 'edit-multi', 'queued', 0, 'Queued for multi-clip rendering')
+        )
+        conn.commit()
+        cur.close()
+        conn.close()
+
+        edit_multi_task.delay(job_id, saved_paths, prompt, audio_path, audio_start, audio_duck_db)
+
+        return jsonify({
+            'job_id': job_id,
+            'status': 'queued',
+            'job_type': 'edit-multi',
+            'message': 'Multi-clip render queued'
+        }), 202
+
+    except Exception as e:
+        print(f"Error queuing multi-clip edit: {str(e)}")
+        import traceback; traceback.print_exc()
+        return jsonify({'error': str(e)}), 500
+
+
 @app.route('/api/payments/plans', methods=['GET'])
 def get_subscription_plans():
     """Get all active subscription plans"""
@@ -955,3 +1025,64 @@ def get_user_transactions():
     except Exception as e:
         print(f"Error fetching transactions: {str(e)}")
         return jsonify({'error': 'Failed to fetch transactions'}), 500
+
+@app.route('/api/generate-image', methods=['POST'])
+def generate_image():
+    """Generate a creative image for video moodboarding"""
+    try:
+        data = request.get_json() or {}
+        prompt = (data.get('prompt') or '').strip()
+
+        if not prompt:
+            return jsonify({'error': 'Prompt is required'}), 400
+
+        # Enhanced prompt for consistent visual style
+        composed_prompt = f"{prompt}\nStyle: cinematic, high contrast, neon green (#00ff41) accents, dark slate backgrounds, professional studio lighting"
+
+        try:
+            # Direct REST API call to Imagen
+            import requests
+            
+            url = f"https://generativelanguage.googleapis.com/v1beta/models/{IMAGE_MODEL_ID}:predict"
+            headers = {
+                'Content-Type': 'application/json',
+            }
+            payload = {
+                'instances': [{'prompt': composed_prompt}],
+                'parameters': {
+                    'sampleCount': 1,
+                    'aspectRatio': '16:9'
+                }
+            }
+            
+            response = requests.post(f"{url}?key={API_KEY}", headers=headers, json=payload)
+            
+            if response.status_code == 200:
+                result = response.json()
+                # Extract image data from predictions
+                if 'predictions' in result and len(result['predictions']) > 0:
+                    image_base64 = result['predictions'][0].get('bytesBase64Encoded', '')
+                    if image_base64:
+                        return jsonify({
+                            'image_base64': image_base64,
+                            'mime_type': 'image/png'
+                        }), 200
+            
+            # If we get here, the API call didn't work as expected
+            raise ValueError(f"API returned status {response.status_code}: {response.text[:200]}")
+            
+        except Exception as img_err:
+            print(f"Image generation failed: {img_err}")
+            return jsonify({
+                'error': 'Image generation is not currently available. Imagen model access may not be enabled for your API key. Please enable Imagen 3 in Google AI Studio or use an alternative image generation service.',
+                'details': str(img_err)
+            }), 502
+            
+    except Exception as e:
+        print(f"Image generation error: {str(e)}")
+        import traceback
+        traceback.print_exc()
+        return jsonify({'error': f'Image generation failed: {str(e)}'}), 500
+
+if __name__ == '__main__':
+    app.run(debug=True, host='0.0.0.0', port=5000)

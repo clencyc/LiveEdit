@@ -113,7 +113,7 @@ export const PaymentModal: React.FC<PaymentModalProps> = ({
                 <div className="flex justify-between items-center">
                   <span className="text-lg font-semibold">Total</span>
                   <span className="text-2xl font-bold text-blue-500">
-                    ₦{planPrice.toLocaleString()}
+                    KSh {planPrice.toLocaleString()}
                   </span>
                 </div>
               </div>

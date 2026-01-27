@@ -2,7 +2,8 @@
 export enum AppMode {
   CHAT = 'CHAT',
   LIVE = 'LIVE',
-  GENERATE = 'GENERATE'
+  GENERATE = 'GENERATE',
+  IMAGE = 'IMAGE'
 }
 
 export type AssetType = 'upload' | 'generation';
