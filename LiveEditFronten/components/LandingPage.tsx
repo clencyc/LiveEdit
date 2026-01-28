@@ -1,5 +1,6 @@
 import React, { useEffect, useState } from 'react';
 import AnimatedBackground from './AnimatedBackground';
+import ProductHuntLaunchTimer from './ProductHuntLaunchTimer';
 
 interface LandingPageProps {
   onStart: () => void;
@@ -70,6 +71,11 @@ const LandingPage: React.FC<LandingPageProps> = ({ onStart }) => {
       </header>
 
       <main className="relative z-20 flex flex-col items-center text-center px-6 mt-16 pb-40">
+        {/* Product Hunt Launch Timer */}
+        <div className="mb-12 w-full">
+          <ProductHuntLaunchTimer />
+        </div>
+
         <div className="inline-flex items-center gap-2 px-4 py-2 border border-[#00ff41] bg-white/5 text-[11px] uppercase tracking-[0.35em] text-[#00ff41]">
           AI VIDEO EDITING
         </div>
