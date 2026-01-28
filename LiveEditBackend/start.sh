@@ -24,4 +24,6 @@ exec gunicorn app:app \
 	--bind 0.0.0.0:"$PORT" \
 	--workers "$WEB_CONCURRENCY" \
 	--threads "$WEB_THREADS" \
-	--timeout "$WEB_TIMEOUT"
+  --timeout 900 \
+  --graceful-timeout 60 \
+  --keep-alive 5
