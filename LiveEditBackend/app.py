@@ -112,6 +112,51 @@ def save_video_to_db(job_id: str, file_index: int, filename: str, file_data: byt
         print(f"[ERROR] Failed to save video to database: {str(e)}")
         raise
 
+def save_audio_to_db(job_id: str, filename: str, file_data: bytes, content_type: str = 'audio/mpeg') -> int:
+    """Save audio blob to database"""
+    try:
+        conn = get_db_connection()
+        cur = conn.cursor()
+        cur.execute("""
+            INSERT INTO audio_files (job_id, filename, content_type, file_data, file_size)
+            VALUES (%s, %s, %s, %s, %s)
+            ON CONFLICT (job_id) DO UPDATE
+            SET file_data = EXCLUDED.file_data,
+                file_size = EXCLUDED.file_size
+            RETURNING id;
+        """, (job_id, filename, content_type, file_data, len(file_data)))
+        audio_id = cur.fetchone()['id']
+        conn.commit()
+        cur.close()
+        conn.close()
+        return audio_id
+    except Exception as e:
+        print(f"[ERROR] Failed to save audio to database: {str(e)}")
+        raise
+
+def get_audio_for_job(job_id: str) -> tuple:
+    """Retrieve audio blob for a job. Returns (filename, file_data) or (None, None)"""
+    try:
+        conn = get_db_connection()
+        cur = conn.cursor()
+        cur.execute("""
+            SELECT filename, file_data
+            FROM audio_files
+            WHERE job_id = %s
+            LIMIT 1
+        """, (job_id,))
+        row = cur.fetchone()
+        cur.close()
+        conn.close()
+        
+        if not row:
+            return None, None
+        
+        return row['filename'], row['file_data']
+    except Exception as e:
+        print(f"[ERROR] Failed to retrieve audio from database: {str(e)}")
+        return None, None
+
 def get_video_from_db(job_id: str, file_index: int) -> tuple:
     """Retrieve video blob from database. Returns (filename, file_data)"""
     try:
@@ -303,10 +348,55 @@ def init_video_job_table():
     except Exception as e:
         print(f"Warning: Could not initialize video_jobs table: {str(e)}")
 
+def init_media_tables():
+    """Create tables to store video/audio blobs for jobs"""
+    try:
+        conn = get_db_connection()
+        cur = conn.cursor()
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS video_files (
+                id SERIAL PRIMARY KEY,
+                job_id VARCHAR(64) NOT NULL,
+                file_index INTEGER NOT NULL,
+                filename VARCHAR(255) NOT NULL,
+                content_type VARCHAR(100),
+                file_data BYTEA NOT NULL,
+                file_size BIGINT,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                UNIQUE(job_id, file_index)
+            );
+        """)
+        cur.execute("""
+            CREATE INDEX IF NOT EXISTS idx_video_files_job_id
+            ON video_files (job_id);
+        """)
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS audio_files (
+                id SERIAL PRIMARY KEY,
+                job_id VARCHAR(64) NOT NULL,
+                filename VARCHAR(255) NOT NULL,
+                content_type VARCHAR(100),
+                file_data BYTEA NOT NULL,
+                file_size BIGINT,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                UNIQUE(job_id)
+            );
+        """)
+        cur.execute("""
+            CREATE INDEX IF NOT EXISTS idx_audio_files_job_id
+            ON audio_files (job_id);
+        """)
+        conn.commit()
+        cur.close()
+        conn.close()
+    except Exception as e:
+        print(f"Warning: Could not initialize media tables: {str(e)}")
+
 # Initialize auth table on startup
 init_auth_table()
 init_payment_tables()
 init_video_job_table()
+init_media_tables()
 
 @app.route('/health', methods=['GET'])
 def health_check():
@@ -867,14 +957,13 @@ def edit_multi():
 
         print(f"[DEBUG] Total videos saved to DB: {video_count}")
 
-        audio_path = None
+        audio_filename = None
         if audio_file and audio_file.filename:
             audio_filename = secure_filename(audio_file.filename) or 'effect_audio.mp3'
-            audio_path = os.path.join(job_dir, audio_filename)
-            audio_file.save(audio_path)
-            # Ensure audio file is written to disk
-            if not os.path.exists(audio_path):
-                raise IOError(f"Failed to save audio file: {audio_path}")
+            audio_data = audio_file.read()
+            audio_content_type = audio_file.content_type or 'audio/mpeg'
+            audio_id = save_audio_to_db(job_id, audio_filename, audio_data, audio_content_type)
+            print(f"[DEBUG] Audio saved to DB: id={audio_id}, name={audio_filename}, size={len(audio_data)} bytes")
 
         conn = get_db_connection()
         cur = conn.cursor()
@@ -889,8 +978,8 @@ def edit_multi():
         cur.close()
         conn.close()
 
-        # Pass job_id instead of file paths - Celery worker will extract from DB
-        edit_multi_task.delay(job_id, prompt, audio_path, audio_start, audio_duck_db)
+        # Pass job_id and audio_filename instead of file paths - Celery worker will extract from DB
+        edit_multi_task.delay(job_id, prompt, audio_filename, audio_start, audio_duck_db)
 
         return jsonify({
             'job_id': job_id,

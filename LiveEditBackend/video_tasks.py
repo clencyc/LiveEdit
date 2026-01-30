@@ -466,10 +466,11 @@ def edit_multi_task(
     """
     Backward/forward compatible task signature.
     Old call: edit_multi_task(job_id, video_paths, user_prompt, audio_path, audio_start, audio_duck_db)
-    New call: edit_multi_task(job_id, user_prompt, audio_path, audio_start, audio_duck_db)
+    New call: edit_multi_task(job_id, user_prompt, audio_filename, audio_start, audio_duck_db)
     """
     video_paths: List[str] = []
     user_prompt: str = ""
+    audio_filename: Optional[str] = None
     audio_path: Optional[str] = None
     audio_start: str = "00:00"
     audio_duck_db: float = 0.0
@@ -477,7 +478,7 @@ def edit_multi_task(
     if isinstance(arg2, (list, tuple)):
         video_paths = [str(p) for p in arg2]
         user_prompt = arg3 or ""
-        audio_path = arg4
+        audio_filename = arg4
         audio_start = arg5 if isinstance(arg5, str) else "00:00"
         try:
             audio_duck_db = float(arg6)
@@ -485,7 +486,7 @@ def edit_multi_task(
             audio_duck_db = 0.0
     else:
         user_prompt = arg2 or ""
-        audio_path = arg3
+        audio_filename = arg3
         audio_start = arg4 if isinstance(arg4, str) else "00:00"
         try:
             audio_duck_db = float(arg5)
@@ -494,7 +495,7 @@ def edit_multi_task(
 
     print(f"[DEBUG] edit_multi_task started for job {job_id}")
     print(f"[DEBUG] Parsed prompt: {user_prompt}")
-    print(f"[DEBUG] Parsed audio path: {audio_path}")
+    print(f"[DEBUG] Parsed audio filename: {audio_filename}")
     if video_paths:
         print(f"[DEBUG] Received {len(video_paths)} video paths from task args")
     else:
@@ -549,28 +550,37 @@ def edit_multi_task(
         else:
             raise FileNotFoundError(f"No videos found in database for job {job_id}")
         
-    except Exception as e:
-        print(f"[ERROR] Failed to extract videos: {str(e)}")
-        update_job(job_id, status="failed", message=f"Failed to extract videos: {str(e)}", progress=100)
-        raise
-    
-    update_job(job_id, status="processing", message="Analyzing instructions", progress=5)
-    try:
-        # Validate that all video files exist before processing
-        print(f"[DEBUG] Validating {len(video_paths)} video paths...")
-        for i, p in enumerate(video_paths):
-            exists = os.path.exists(p)
-            size = os.path.getsize(p) if exists else 0
-            print(f"[DEBUG] Path {i}: {p} - Exists: {exists}, Size: {size} bytes")
-            if not exists:
-                raise FileNotFoundError(f"Video file not found: {p}")
-        
-        if audio_path and not os.path.exists(audio_path):
-            raise FileNotFoundError(f"Audio file not found: {audio_path}")
-        
-        clip_metas = []
-        for p in video_paths:
-            clip_metas.append({"name": os.path.basename(p), "duration": probe_duration(p)})
+        # Extract audio for job if stored in DB
+        if audio_filename:
+            try:
+                conn = get_db_connection()
+                cur = conn.cursor()
+                cur.execute("""
+                    SELECT file_data
+                    FROM audio_files
+                    WHERE job_id = %s
+                    LIMIT 1
+                """, (job_id,))
+                audio_row = cur.fetchone()
+                cur.close()
+                conn.close()
+            except Exception as e:
+                print(f"[ERROR] Failed to query audio from database: {str(e)}")
+                audio_row = None
+
+            if audio_row:
+                audio_data = audio_row['file_data']
+                audio_path = os.path.join(job_dir, audio_filename)
+                with open(audio_path, 'wb') as f:
+                    f.write(audio_data)
+                print(f"[DEBUG] Extracted audio from DB: {audio_path} ({len(audio_data)} bytes)")
+            else:
+                print(f"[WARN] Audio file {audio_filename} was expected but not found in DB")
+                audio_path = None
+        else:
+            print("[DEBUG] No audio file expected for job")
+            audio_path = None
+
 
         prompt = build_multi_edit_prompt(user_prompt, clip_metas)
         update_job(job_id, progress=10, message="Getting AI edit plan (may retry if API overloaded)")
