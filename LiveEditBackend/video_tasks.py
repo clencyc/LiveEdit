@@ -467,44 +467,44 @@ def edit_multi_task(
     print(f"[DEBUG] Audio path: {audio_path}")
     
     update_job(job_id, status="processing", message="Extracting videos from database", progress=2)
-    try:
-        # Extract videos from database to workspace
-        job_dir = os.path.join(JOB_WORKDIR, job_id)
-        os.makedirs(job_dir, exist_ok=True)
+    
+    # Extract videos from database to workspace
+    job_dir = os.path.join(JOB_WORKDIR, job_id)
+    os.makedirs(job_dir, exist_ok=True)
+    
+    # Helper function to extract videos from database
+    def get_all_videos_for_job(job_id: str) -> List[str]:
+        """Retrieve videos from database and save to disk"""
+        conn = get_db_connection()
+        cur = conn.cursor()
+        cur.execute("""
+            SELECT file_index, file_data
+            FROM video_files
+            WHERE job_id = %s
+            ORDER BY file_index ASC
+        """, (job_id,))
+        rows = cur.fetchall()
+        cur.close()
+        conn.close()
         
-        # Helper function to extract videos from database
-        def get_all_videos_for_job(job_id: str) -> List[str]:
-            """Retrieve videos from database and save to disk"""
-            conn = get_db_connection()
-            cur = conn.cursor()
-            cur.execute("""
-                SELECT file_index, file_data
-                FROM video_files
-                WHERE job_id = %s
-                ORDER BY file_index ASC
-            """, (job_id,))
-            rows = cur.fetchall()
-            cur.close()
-            conn.close()
-            
-            paths = []
-            for row in rows:
-                file_index = row['file_index']
-                file_data = row['file_data']
-                video_path = os.path.join(job_dir, f"video{file_index}.mp4")
-                with open(video_path, 'wb') as f:
-                    f.write(file_data)
-                paths.append(video_path)
-                print(f"[DEBUG] Extracted video {file_index} from DB: {video_path} ({len(file_data)} bytes)")
-            
-            return paths
+        paths = []
+        for row in rows:
+            file_index = row['file_index']
+            file_data = row['file_data']
+            video_path = os.path.join(job_dir, f"video{file_index}.mp4")
+            with open(video_path, 'wb') as f:
+                f.write(file_data)
+            paths.append(video_path)
+            print(f"[DEBUG] Extracted video {file_index} from DB: {video_path} ({len(file_data)} bytes)")
         
-        video_paths = get_all_videos_for_job(job_id)
-        if not video_paths:
-            raise FileNotFoundError(f"No videos found in database for job {job_id}")
-        
-        print(f"[DEBUG] Extracted {len(video_paths)} videos from DB")
-        
+        return paths
+    
+    video_paths = get_all_videos_for_job(job_id)
+    if not video_paths:
+        raise FileNotFoundError(f"No videos found in database for job {job_id}")
+    
+    print(f"[DEBUG] Extracted {len(video_paths)} videos from DB")
+    
     update_job(job_id, status="processing", message="Analyzing instructions", progress=5)
     try:
         # Validate that all video files exist before processing
