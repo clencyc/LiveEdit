@@ -30,7 +30,9 @@ CORS(app,
              "http://127.0.0.1:3000",
              "http://127.0.0.1:5173",
              "https://liveedit.onrender.com",
-             "https://*.vercel.app"
+             "https://*.vercel.app",
+             "https://livedit.space",
+             "https://www.livedit.space"
          ],
          "methods": ["GET", "POST", "PUT", "DELETE", "OPTIONS"],
          "allow_headers": ["Content-Type", "Authorization"],
@@ -47,7 +49,9 @@ def after_request(response):
         "http://localhost:5173",
         "http://127.0.0.1:3000",
         "http://127.0.0.1:5173",
-        "https://liveedit.onrender.com"
+        "https://liveedit.onrender.com",
+        "https://livedit.space",
+        "https://www.livedit.space"
     ] or (origin and origin.endswith('.vercel.app')):
         response.headers['Access-Control-Allow-Origin'] = origin
         response.headers['Access-Control-Allow-Credentials'] = 'true'
