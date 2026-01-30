@@ -90,6 +90,94 @@ def get_db_connection():
     """Create a new database connection"""
     return psycopg2.connect(DATABASE_URL, cursor_factory=RealDictCursor)
 
+def save_video_to_db(job_id: str, file_index: int, filename: str, file_data: bytes, content_type: str = 'video/mp4') -> int:
+    """Save video blob to database"""
+    try:
+        conn = get_db_connection()
+        cur = conn.cursor()
+        cur.execute("""
+            INSERT INTO video_files (job_id, file_index, filename, content_type, file_data, file_size)
+            VALUES (%s, %s, %s, %s, %s, %s)
+            ON CONFLICT (job_id, file_index) DO UPDATE
+            SET file_data = EXCLUDED.file_data,
+                file_size = EXCLUDED.file_size
+            RETURNING id;
+        """, (job_id, file_index, filename, content_type, file_data, len(file_data)))
+        video_id = cur.fetchone()['id']
+        conn.commit()
+        cur.close()
+        conn.close()
+        return video_id
+    except Exception as e:
+        print(f"[ERROR] Failed to save video to database: {str(e)}")
+        raise
+
+def get_video_from_db(job_id: str, file_index: int) -> tuple:
+    """Retrieve video blob from database. Returns (filename, file_data)"""
+    try:
+        conn = get_db_connection()
+        cur = conn.cursor()
+        cur.execute("""
+            SELECT filename, file_data
+            FROM video_files
+            WHERE job_id = %s AND file_index = %s
+        """, (job_id, file_index))
+        row = cur.fetchone()
+        cur.close()
+        conn.close()
+        
+        if not row:
+            raise FileNotFoundError(f"Video not found in database: job={job_id}, index={file_index}")
+        
+        return row['filename'], row['file_data']
+    except Exception as e:
+        print(f"[ERROR] Failed to retrieve video from database: {str(e)}")
+        raise
+
+def get_all_videos_for_job(job_id: str) -> list:
+    """Get all video files for a job. Returns list of (file_index, filename, file_data)"""
+    try:
+        conn = get_db_connection()
+        cur = conn.cursor()
+        cur.execute("""
+            SELECT file_index, filename, file_data
+            FROM video_files
+            WHERE job_id = %s
+            ORDER BY file_index ASC
+        """, (job_id,))
+        rows = cur.fetchall()
+        cur.close()
+        conn.close()
+        
+        return [(row['file_index'], row['filename'], row['file_data']) for row in rows]
+    except Exception as e:
+        print(f"[ERROR] Failed to retrieve videos from database: {str(e)}")
+        return []
+
+def extract_videos_to_workspace(job_id: str) -> list:
+    """Extract all videos for a job from database to workspace. Returns list of file paths"""
+    try:
+        job_dir = os.path.join(JOB_WORKDIR, job_id)
+        os.makedirs(job_dir, exist_ok=True)
+        
+        videos = get_all_videos_for_job(job_id)
+        paths = []
+        
+        for file_index, filename, file_data in videos:
+            # Standardize filename as videoN.mp4
+            video_path = os.path.join(job_dir, f"video{file_index}.mp4")
+            with open(video_path, 'wb') as f:
+                f.write(file_data)
+            paths.append(video_path)
+            print(f"[DEBUG] Extracted video {file_index} from DB: {video_path} ({len(file_data)} bytes)")
+        
+        return paths
+    except Exception as e:
+        print(f"[ERROR] Failed to extract videos from database: {str(e)}")
+        raise
+
+    return psycopg2.connect(DATABASE_URL, cursor_factory=RealDictCursor)
+
 def hash_password(password: str) -> str:
     """Hash a password using PBKDF2"""
     salt = secrets.token_hex(16)
@@ -757,32 +845,27 @@ def edit_multi():
         job_dir = os.path.join(JOB_WORKDIR, job_id)
         os.makedirs(job_dir, exist_ok=True)
 
-        saved_paths = []
-        save_counter = 0  # Track actual saved files independently
+        # Save videos to database
+        video_count = 0
         for idx, vf in enumerate(video_files):
             if not vf or vf.filename == '':
                 print(f"[DEBUG] Skipping empty file at index {idx}")
                 continue
-            # Use standardized naming based on save counter: video0.mp4, video1.mp4, video2.mp4
-            # This ensures consistency regardless of which slots had files
-            filename = f'video{save_counter}.mp4'
-            path = os.path.join(job_dir, filename)
-            print(f"[DEBUG] Saving file {idx} as video{save_counter}.mp4: {vf.filename} -> {path}")
-            vf.save(path)
-            # Ensure file is written to disk before proceeding
-            if os.path.exists(path):
-                file_size = os.path.getsize(path)
-                print(f"[DEBUG] Video {save_counter} saved successfully: {path} ({file_size} bytes)")
-                saved_paths.append(path)
-                save_counter += 1
-            else:
-                raise IOError(f"Failed to save video file: {path}")
+            
+            # Read file data
+            file_data = vf.read()
+            filename = secure_filename(vf.filename) or f'video{video_count}.mp4'
+            content_type = vf.content_type or 'video/mp4'
+            
+            # Save to database
+            video_id = save_video_to_db(job_id, video_count, filename, file_data, content_type)
+            print(f"[DEBUG] Video {video_count} saved to DB: id={video_id}, name={filename}, size={len(file_data)} bytes")
+            video_count += 1
 
-        print(f"[DEBUG] Total videos saved: {len(saved_paths)}")
-        print(f"[DEBUG] Saved paths: {saved_paths}")
-
-        if not saved_paths:
+        if video_count == 0:
             return jsonify({'error': 'No valid video files provided'}), 400
+
+        print(f"[DEBUG] Total videos saved to DB: {video_count}")
 
         audio_path = None
         if audio_file and audio_file.filename:
@@ -806,7 +889,8 @@ def edit_multi():
         cur.close()
         conn.close()
 
-        edit_multi_task.delay(job_id, saved_paths, prompt, audio_path, audio_start, audio_duck_db)
+        # Pass job_id instead of file paths - Celery worker will extract from DB
+        edit_multi_task.delay(job_id, prompt, audio_path, audio_start, audio_duck_db)
 
         return jsonify({
             'job_id': job_id,
