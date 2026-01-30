@@ -468,42 +468,55 @@ def edit_multi_task(
     
     update_job(job_id, status="processing", message="Extracting videos from database", progress=2)
     
-    # Extract videos from database to workspace
-    job_dir = os.path.join(JOB_WORKDIR, job_id)
-    os.makedirs(job_dir, exist_ok=True)
-    
-    # Helper function to extract videos from database
-    def get_all_videos_for_job(job_id: str) -> List[str]:
-        """Retrieve videos from database and save to disk"""
-        conn = get_db_connection()
-        cur = conn.cursor()
-        cur.execute("""
-            SELECT file_index, file_data
-            FROM video_files
-            WHERE job_id = %s
-            ORDER BY file_index ASC
-        """, (job_id,))
-        rows = cur.fetchall()
-        cur.close()
-        conn.close()
+    try:
+        # Extract videos from database to workspace
+        job_dir = os.path.join(JOB_WORKDIR, job_id)
+        os.makedirs(job_dir, exist_ok=True)
+        print(f"[DEBUG] Job directory: {job_dir}")
         
-        paths = []
+        # Query database for videos
+        try:
+            conn = get_db_connection()
+            cur = conn.cursor()
+            print(f"[DEBUG] Querying videos for job_id: {job_id}")
+            cur.execute("""
+                SELECT file_index, file_data
+                FROM video_files
+                WHERE job_id = %s
+                ORDER BY file_index ASC
+            """, (job_id,))
+            rows = cur.fetchall()
+            cur.close()
+            conn.close()
+            print(f"[DEBUG] Found {len(rows) if rows else 0} videos in database")
+        except Exception as e:
+            print(f"[ERROR] Failed to query videos from database: {str(e)}")
+            raise
+        
+        if not rows:
+            raise FileNotFoundError(f"No videos found in database for job {job_id}")
+        
+        # Extract videos to disk
+        video_paths = []
         for row in rows:
-            file_index = row['file_index']
-            file_data = row['file_data']
-            video_path = os.path.join(job_dir, f"video{file_index}.mp4")
-            with open(video_path, 'wb') as f:
-                f.write(file_data)
-            paths.append(video_path)
-            print(f"[DEBUG] Extracted video {file_index} from DB: {video_path} ({len(file_data)} bytes)")
+            try:
+                file_index = row['file_index']
+                file_data = row['file_data']
+                video_path = os.path.join(job_dir, f"video{file_index}.mp4")
+                with open(video_path, 'wb') as f:
+                    f.write(file_data)
+                video_paths.append(video_path)
+                print(f"[DEBUG] Extracted video {file_index} from DB: {video_path} ({len(file_data)} bytes)")
+            except Exception as e:
+                print(f"[ERROR] Failed to extract video {file_index}: {str(e)}")
+                raise
         
-        return paths
-    
-    video_paths = get_all_videos_for_job(job_id)
-    if not video_paths:
-        raise FileNotFoundError(f"No videos found in database for job {job_id}")
-    
-    print(f"[DEBUG] Extracted {len(video_paths)} videos from DB")
+        print(f"[DEBUG] Extracted {len(video_paths)} videos from DB")
+        
+    except Exception as e:
+        print(f"[ERROR] Failed to extract videos: {str(e)}")
+        update_job(job_id, status="failed", message=f"Failed to extract videos: {str(e)}", progress=100)
+        raise
     
     update_job(job_id, status="processing", message="Analyzing instructions", progress=5)
     try:
