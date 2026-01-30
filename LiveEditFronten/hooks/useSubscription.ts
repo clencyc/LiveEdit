@@ -55,7 +55,10 @@ export const useSubscription = (userEmail: string | null): UseSubscriptionResult
     try {
       setLoading(true);
       const response = await fetch(
-        `${import.meta.env.VITE_BACKEND_URL || 'https://liveedit.onrender.com'}/api/user/subscription?email=${encodeURIComponent(userEmail)}`
+        `${import.meta.env.VITE_BACKEND_URL || 'https://liveedit.onrender.com'}/api/user/subscription?email=${encodeURIComponent(userEmail)}`,
+        {
+          credentials: 'include'
+        }
       );
       
       if (!response.ok) {

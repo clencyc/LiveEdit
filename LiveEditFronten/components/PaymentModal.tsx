@@ -32,6 +32,7 @@ export const PaymentModal: React.FC<PaymentModalProps> = ({
         headers: {
           'Content-Type': 'application/json',
         },
+        credentials: 'include',
         body: JSON.stringify({
           email: userEmail,
           plan_id: planId

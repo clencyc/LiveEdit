@@ -20,7 +20,41 @@ from video_tasks import analyze_video_task, edit_video_task, edit_multi_task
 load_dotenv()
 
 app = Flask(__name__)
-CORS(app)
+
+# Configure CORS with proper settings for cookies and credentials
+CORS(app, 
+     resources={r"/api/*": {
+         "origins": [
+             "http://localhost:3000",
+             "http://localhost:5173",
+             "http://127.0.0.1:3000",
+             "http://127.0.0.1:5173",
+             "https://liveedit.onrender.com",
+             "https://*.vercel.app"
+         ],
+         "methods": ["GET", "POST", "PUT", "DELETE", "OPTIONS"],
+         "allow_headers": ["Content-Type", "Authorization"],
+         "supports_credentials": True,
+         "max_age": 3600
+     }})
+
+# Additional CORS headers for all responses
+@app.after_request
+def after_request(response):
+    origin = request.headers.get('Origin')
+    if origin in [
+        "http://localhost:3000",
+        "http://localhost:5173",
+        "http://127.0.0.1:3000",
+        "http://127.0.0.1:5173",
+        "https://liveedit.onrender.com"
+    ] or (origin and origin.endswith('.vercel.app')):
+        response.headers['Access-Control-Allow-Origin'] = origin
+        response.headers['Access-Control-Allow-Credentials'] = 'true'
+        response.headers['Access-Control-Allow-Methods'] = 'GET, POST, PUT, DELETE, OPTIONS'
+        response.headers['Access-Control-Allow-Headers'] = 'Content-Type, Authorization'
+        response.headers['Access-Control-Max-Age'] = '3600'
+    return response
 
 # Configure Gemini API
 API_KEY = os.getenv('GEMINI_API_KEY')
@@ -28,9 +62,9 @@ if not API_KEY:
     raise ValueError("GEMINI_API_KEY not found in .env file")
 
 genai.configure(api_key=API_KEY)
-model = genai.GenerativeModel("gemini-2.5-flash")
-# Revert to supported video analysis model
-video_model = genai.GenerativeModel("gemini-2.5-pro")
+model = genai.GenerativeModel("gemini-3-flash-preview")
+# Use Gemini 3 Flash for fast video analysis
+video_model = genai.GenerativeModel("gemini-3-flash-preview")
 
 # Image generation model
 IMAGE_MODEL_ID = os.getenv('GEMINI_IMAGE_MODEL', 'imagen-3.0-generate-001')
@@ -534,12 +568,18 @@ if __name__ == '__main__':
             video_filename = secure_filename(video_file.filename) or 'input_video.mp4'
             video_path = os.path.join(job_dir, video_filename)
             video_file.save(video_path)
+            # Ensure file is written to disk before proceeding
+            if not os.path.exists(video_path):
+                raise IOError(f"Failed to save video file: {video_path}")
 
             audio_path = None
             if audio_file:
                 audio_filename = secure_filename(audio_file.filename) or 'effect_audio.mp3'
                 audio_path = os.path.join(job_dir, audio_filename)
                 audio_file.save(audio_path)
+                # Ensure audio file is written to disk
+                if not os.path.exists(audio_path):
+                    raise IOError(f"Failed to save audio file: {audio_path}")
 
             conn = get_db_connection()
             cur = conn.cursor()
@@ -689,6 +729,10 @@ def edit_multi():
     """Queue multi-clip edit (up to 3 videos) with instructions-driven plan"""
     try:
         video_files = request.files.getlist('video_files')
+        print(f"[DEBUG] Received {len(video_files)} video files from client")
+        for i, vf in enumerate(video_files):
+            print(f"[DEBUG] File {i}: filename='{vf.filename}', content_type='{vf.content_type}'")
+        
         if not video_files:
             return jsonify({'error': 'No video files provided'}), 400
         if len(video_files) > 3:
@@ -710,13 +754,28 @@ def edit_multi():
         os.makedirs(job_dir, exist_ok=True)
 
         saved_paths = []
+        save_counter = 0  # Track actual saved files independently
         for idx, vf in enumerate(video_files):
             if not vf or vf.filename == '':
+                print(f"[DEBUG] Skipping empty file at index {idx}")
                 continue
-            filename = secure_filename(vf.filename) or f'clip_{idx}.mp4'
+            # Use standardized naming based on save counter: video0.mp4, video1.mp4, video2.mp4
+            # This ensures consistency regardless of which slots had files
+            filename = f'video{save_counter}.mp4'
             path = os.path.join(job_dir, filename)
+            print(f"[DEBUG] Saving file {idx} as video{save_counter}.mp4: {vf.filename} -> {path}")
             vf.save(path)
-            saved_paths.append(path)
+            # Ensure file is written to disk before proceeding
+            if os.path.exists(path):
+                file_size = os.path.getsize(path)
+                print(f"[DEBUG] Video {save_counter} saved successfully: {path} ({file_size} bytes)")
+                saved_paths.append(path)
+                save_counter += 1
+            else:
+                raise IOError(f"Failed to save video file: {path}")
+
+        print(f"[DEBUG] Total videos saved: {len(saved_paths)}")
+        print(f"[DEBUG] Saved paths: {saved_paths}")
 
         if not saved_paths:
             return jsonify({'error': 'No valid video files provided'}), 400
@@ -726,6 +785,9 @@ def edit_multi():
             audio_filename = secure_filename(audio_file.filename) or 'effect_audio.mp3'
             audio_path = os.path.join(job_dir, audio_filename)
             audio_file.save(audio_path)
+            # Ensure audio file is written to disk
+            if not os.path.exists(audio_path):
+                raise IOError(f"Failed to save audio file: {audio_path}")
 
         conn = get_db_connection()
         cur = conn.cursor()

@@ -48,6 +48,7 @@ const AuthForm: React.FC<AuthFormProps> = ({ onAuthSuccess }) => {
       const response = await fetch(`${backendUrl}${endpoint}`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
+        credentials: 'include',
         body: JSON.stringify({ email, password })
       });
 

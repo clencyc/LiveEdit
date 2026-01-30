@@ -90,7 +90,9 @@ const ChatInterface: React.FC<ChatInterfaceProps> = ({ onAddAsset }) => {
 
   useEffect(() => {
     // Fetch audio library from backend
-    fetch(`${import.meta.env.VITE_BACKEND_URL || 'https://liveedit.onrender.com'}/api/audio-effects`)
+    fetch(`${import.meta.env.VITE_BACKEND_URL || 'https://liveedit.onrender.com'}/api/audio-effects`, {
+      credentials: 'include'
+    })
       .then(res => res.json())
       .then(data => {
         const library = data.map((effect: any) => ({
@@ -106,7 +108,9 @@ const ChatInterface: React.FC<ChatInterfaceProps> = ({ onAddAsset }) => {
 
   const loadAudioLibrary = async () => {
     try {
-      const response = await fetch(`${import.meta.env.VITE_BACKEND_URL || 'https://liveedit.onrender.com'}/api/audio-effects`);
+      const response = await fetch(`${import.meta.env.VITE_BACKEND_URL || 'https://liveedit.onrender.com'}/api/audio-effects`, {
+        credentials: 'include'
+      });
       const data = await response.json();
       const library = data.map((effect: any) => ({
         id: effect.id.toString(),
@@ -134,6 +138,7 @@ const ChatInterface: React.FC<ChatInterfaceProps> = ({ onAddAsset }) => {
         headers: {
           'Content-Type': 'application/json',
         },
+        credentials: 'include',
         body: JSON.stringify({
           url: importUrl,
           name: importName,
@@ -311,7 +316,9 @@ const ChatInterface: React.FC<ChatInterfaceProps> = ({ onAddAsset }) => {
         const selectedPreset = audioLibrary.find(a => a.id === selectedAudioId);
         if (selectedPreset) {
           const backendUrl = import.meta.env.VITE_BACKEND_URL || 'https://liveedit.onrender.com';
-          const audioResponse = await fetch(`${backendUrl}/api/audio-effects/${selectedPreset.filename}`);
+          const audioResponse = await fetch(`${backendUrl}/api/audio-effects/${selectedPreset.filename}`, {
+            credentials: 'include'
+          });
           const audioBlob = await audioResponse.blob();
           audioToUse = new File([audioBlob], selectedPreset.filename, { type: 'audio/mpeg' });
         }

@@ -2,6 +2,7 @@ import json
 import mimetypes
 import os
 import subprocess
+import time
 from datetime import datetime
 from typing import Any, Dict, Optional, List
 
@@ -16,10 +17,78 @@ load_dotenv()
 
 # Initialize Gemini 3 client with API key
 API_KEY = os.getenv("GEMINI_API_KEY")
+if not API_KEY:
+    raise ValueError("GEMINI_API_KEY not found in .env file")
+
 client = genai.Client(api_key=API_KEY)
 
 DATABASE_URL = os.getenv("DATABASE_URL")
 JOB_WORKDIR = os.getenv("JOB_WORKDIR", "/tmp/liveedit_jobs")
+
+
+def call_gemini_with_retry(contents, model="gemini-3-flash-preview", max_retries=3, initial_wait=2, job_id=None, update_fn=None):
+    """
+    Call Gemini API with exponential backoff retry logic.
+    Handles transient errors like 503 UNAVAILABLE.
+    
+    Args:
+        contents: The content to send to the model
+        model: The model to use (default: gemini-3-flash-preview)
+        max_retries: Maximum number of retry attempts
+        initial_wait: Initial wait time in seconds before first retry
+        job_id: Optional job ID for status updates
+        update_fn: Optional function to call for status updates (e.g., update_job)
+    
+    Returns:
+        The API response
+        
+    Raises:
+        Exception: If all retries fail
+    """
+    last_error = None
+    
+    for attempt in range(max_retries + 1):  # 0, 1, 2, 3 = 4 total attempts with max_retries=3
+        try:
+            if attempt == 0:
+                print(f"[API] Calling Gemini API...")
+            else:
+                print(f"[RETRY] Retry attempt {attempt}/{max_retries}...")
+                if update_fn and job_id:
+                    update_fn(job_id, message=f"API retry {attempt}/{max_retries} (API temporarily busy)")
+            
+            response = client.models.generate_content(
+                model=model,
+                contents=contents
+            )
+            if attempt > 0:
+                print(f"[RETRY] ✓ Success after {attempt} retry attempt(s)!")
+                if update_fn and job_id:
+                    update_fn(job_id, message="AI analysis in progress")
+            return response
+        except Exception as e:
+            last_error = e
+            error_str = str(e)
+            
+            # Check if it's a retryable error (503, 429, timeout-like errors)
+            is_retryable = any(x in error_str.lower() for x in ['503', '429', 'unavailable', 'overloaded', 'timeout', 'deadline'])
+            
+            if attempt < max_retries and is_retryable:
+                wait_time = initial_wait * (2 ** attempt)  # Exponential backoff: 2, 4, 8, ...
+                print(f"[RETRY] ✗ API temporarily unavailable (attempt {attempt + 1}/{max_retries + 1})")
+                print(f"[RETRY] Error: {error_str[:150]}")
+                print(f"[RETRY] ⏳ Waiting {wait_time}s before retry...")
+                time.sleep(wait_time)
+            elif not is_retryable:
+                # Non-retryable error - fail immediately
+                print(f"[ERROR] ✗ Non-retryable error: {error_str[:200]}")
+                raise last_error
+            else:
+                # Max retries reached
+                print(f"[ERROR] ✗ Max retries ({max_retries}) exhausted. API still unavailable.")
+                raise last_error
+    
+    # Should never reach here, but just in case
+    raise last_error if last_error else Exception("Unknown error in retry logic")
 
 
 def get_db_connection():
@@ -180,16 +249,19 @@ def analyze_video_task(job_id: str, video_path: str, user_prompt: str) -> Dict[s
             f"You are viewing a video file. Analyze frame-by-frame.\nUSER REQUEST: {user_prompt}\n"
             "Return strict JSON with summary, key_events, and edit_plan."
         )
-        response = client.models.generate_content(
+        response = call_gemini_with_retry(
+            contents=[video_part, analysis_prompt],
             model="gemini-3-flash-preview",
-            contents=[video_part, analysis_prompt]
+            max_retries=3
         )
         result = parse_model_response(response)
         update_job(job_id, status="succeeded", progress=100, result_json=json.dumps(result), message="Analysis complete")
         return result
     except Exception as e:
-        update_job(job_id, status="failed", progress=100, message=f"Analysis failed: {e}")
-        return {"error": str(e)}
+        error_msg = f"Analysis failed: {str(e)}"
+        print(f"[ERROR] {error_msg}")
+        update_job(job_id, status="failed", progress=100, message=error_msg)
+        return {"error": error_msg}
 
 
 @celery_app.task(name="edit_video_task")
@@ -309,27 +381,35 @@ def build_concat_command(
         v_label = f"v{i}"
         a_label = f"a{i}"
 
-        v_filter = f"[{i}:v]"
-        a_filter = f"[{i}:a]"
-
+        # Build video filter chain
+        v_filter_chain = []
+        a_filter_chain = []
+        
+        # Add trim filters if needed
         if start_sec is not None or end_sec is not None:
+            trim_parts = []
             if start_sec is not None:
-                v_filter += f"trim=start={start_sec}"
-                a_filter += f"atrim=start={start_sec}"
+                trim_parts.append(f"start={start_sec}")
             if end_sec is not None:
-                v_filter += f":end={end_sec}" if "trim" in v_filter else f"trim=end={end_sec}"
-                a_filter += f":end={end_sec}" if "atrim" in a_filter else f"atrim=end={end_sec}"
-            v_filter += ",setpts=PTS-STARTPTS"
-            a_filter += ",asetpts=PTS-STARTPTS"
+                trim_parts.append(f"end={end_sec}")
+            trim_str = ",".join(trim_parts)
+            v_filter_chain.append(f"trim={trim_str}")
+            a_filter_chain.append(f"atrim={trim_str}")
+            v_filter_chain.append("setpts=PTS-STARTPTS")
+            a_filter_chain.append("asetpts=PTS-STARTPTS")
         else:
-            v_filter += "setpts=PTS-STARTPTS"
-            a_filter += "asetpts=PTS-STARTPTS"
+            v_filter_chain.append("setpts=PTS-STARTPTS")
+            a_filter_chain.append("asetpts=PTS-STARTPTS")
         
         # Add scale filter to normalize dimensions
-        v_filter += f",scale={target_w}:{target_h}"
+        v_filter_chain.append(f"scale={target_w}:{target_h}")
+        
+        # Construct complete filter strings with proper FFmpeg syntax
+        v_filter = f"[{i}:v]" + ",".join(v_filter_chain) + f"[{v_label}]"
+        a_filter = f"[{i}:a]" + ",".join(a_filter_chain) + f"[{a_label}]"
 
-        filter_parts.append(f"{v_filter}[{v_label}]")
-        filter_parts.append(f"{a_filter}[{a_label}]")
+        filter_parts.append(v_filter)
+        filter_parts.append(a_filter)
         v_labels.append(v_label)
         a_labels.append(a_label)
 
@@ -383,16 +463,38 @@ def edit_multi_task(
     audio_start: str = "00:00",
     audio_duck_db: float = 0.0,
 ) -> Dict[str, Any]:
+    print(f"[DEBUG] edit_multi_task started for job {job_id}")
+    print(f"[DEBUG] Received video_paths: {video_paths}")
+    print(f"[DEBUG] User prompt: {user_prompt}")
+    print(f"[DEBUG] Audio path: {audio_path}")
+    
     update_job(job_id, status="processing", message="Analyzing instructions", progress=5)
     try:
+        # Validate that all video files exist before processing
+        print(f"[DEBUG] Validating {len(video_paths)} video paths...")
+        for i, p in enumerate(video_paths):
+            exists = os.path.exists(p)
+            size = os.path.getsize(p) if exists else 0
+            print(f"[DEBUG] Path {i}: {p} - Exists: {exists}, Size: {size} bytes")
+            if not exists:
+                raise FileNotFoundError(f"Video file not found: {p}")
+        
+        if audio_path and not os.path.exists(audio_path):
+            raise FileNotFoundError(f"Audio file not found: {audio_path}")
+        
         clip_metas = []
         for p in video_paths:
             clip_metas.append({"name": os.path.basename(p), "duration": probe_duration(p)})
 
         prompt = build_multi_edit_prompt(user_prompt, clip_metas)
-        response = client.models.generate_content(
+        update_job(job_id, progress=10, message="Getting AI edit plan (may retry if API overloaded)")
+        response = call_gemini_with_retry(
+            contents=prompt,
             model="gemini-3-flash-preview",
-            contents=prompt
+            max_retries=5,  # Try up to 6 times total (initial + 5 retries)
+            initial_wait=3,  # Wait 3, 6, 12, 24, 48 seconds between retries
+            job_id=job_id,
+            update_fn=update_job
         )
         plan = parse_model_response(response) or {}
         print(f"[DEBUG] User prompt: {user_prompt}")
@@ -429,6 +531,14 @@ def edit_multi_task(
         job_dir = os.path.dirname(video_paths[0]) if video_paths else JOB_WORKDIR
         concat_path = os.path.join(job_dir, "concat_video.mp4")
         output_path = os.path.join(job_dir, "output_video.mp4")
+
+        # Final validation before running concat
+        print(f"[DEBUG] Ordered paths for concat: {ordered_paths}")
+        for i, path in enumerate(ordered_paths):
+            if not os.path.exists(path):
+                raise FileNotFoundError(f"Ordered video file {i} not found: {path}")
+            file_size = os.path.getsize(path)
+            print(f"[DEBUG] Video {i}: {path} (size: {file_size} bytes)")
 
         cmd_concat = build_concat_command(ordered_paths, order_orig_indices, cuts_map, concat_path)
         print(f"[DEBUG] Concat command: {' '.join(cmd_concat)}")

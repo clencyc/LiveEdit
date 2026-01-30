@@ -37,7 +37,9 @@ export const SubscriptionPlans: React.FC<SubscriptionPlansProps> = ({
 
   const fetchPlans = async () => {
     try {
-      const response = await fetch(`${import.meta.env.VITE_BACKEND_URL || 'https://liveedit.onrender.com'}/api/payments/plans`);
+      const response = await fetch(`${import.meta.env.VITE_BACKEND_URL || 'https://liveedit.onrender.com'}/api/payments/plans`, {
+        credentials: 'include'
+      });
       if (!response.ok) throw new Error('Failed to fetch plans');
       const data = await response.json();
       setPlans(data);

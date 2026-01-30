@@ -25,6 +25,7 @@ const ImageGenerator: React.FC<ImageGeneratorProps> = ({ onAddAsset }) => {
         headers: {
           'Content-Type': 'application/json',
         },
+        credentials: 'include',
         body: JSON.stringify({ prompt: prompt.trim() })
       });
 
