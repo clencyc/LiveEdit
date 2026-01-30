@@ -392,7 +392,7 @@ def build_concat_command(
                 trim_parts.append(f"start={start_sec}")
             if end_sec is not None:
                 trim_parts.append(f"end={end_sec}")
-            trim_str = ",".join(trim_parts)
+            trim_str = ":".join(trim_parts)
             v_filter_chain.append(f"trim={trim_str}")
             a_filter_chain.append(f"atrim={trim_str}")
             v_filter_chain.append("setpts=PTS-STARTPTS")
