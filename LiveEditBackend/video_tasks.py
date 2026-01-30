@@ -457,14 +457,48 @@ def build_concat_command(
 @celery_app.task(name="edit_multi_task")
 def edit_multi_task(
     job_id: str,
-    user_prompt: str,
-    audio_path: Optional[str] = None,
-    audio_start: str = "00:00",
-    audio_duck_db: float = 0.0,
+    arg2: Any,
+    arg3: Any = None,
+    arg4: Any = None,
+    arg5: Any = "00:00",
+    arg6: Any = 0.0,
 ) -> Dict[str, Any]:
+    """
+    Backward/forward compatible task signature.
+    Old call: edit_multi_task(job_id, video_paths, user_prompt, audio_path, audio_start, audio_duck_db)
+    New call: edit_multi_task(job_id, user_prompt, audio_path, audio_start, audio_duck_db)
+    """
+    video_paths: List[str] = []
+    user_prompt: str = ""
+    audio_path: Optional[str] = None
+    audio_start: str = "00:00"
+    audio_duck_db: float = 0.0
+
+    if isinstance(arg2, (list, tuple)):
+        video_paths = [str(p) for p in arg2]
+        user_prompt = arg3 or ""
+        audio_path = arg4
+        audio_start = arg5 if isinstance(arg5, str) else "00:00"
+        try:
+            audio_duck_db = float(arg6)
+        except Exception:
+            audio_duck_db = 0.0
+    else:
+        user_prompt = arg2 or ""
+        audio_path = arg3
+        audio_start = arg4 if isinstance(arg4, str) else "00:00"
+        try:
+            audio_duck_db = float(arg5)
+        except Exception:
+            audio_duck_db = 0.0
+
     print(f"[DEBUG] edit_multi_task started for job {job_id}")
-    print(f"[DEBUG] User prompt: {user_prompt}")
-    print(f"[DEBUG] Audio path: {audio_path}")
+    print(f"[DEBUG] Parsed prompt: {user_prompt}")
+    print(f"[DEBUG] Parsed audio path: {audio_path}")
+    if video_paths:
+        print(f"[DEBUG] Received {len(video_paths)} video paths from task args")
+    else:
+        print(f"[DEBUG] No video paths provided in task args; will load from DB")
     
     update_job(job_id, status="processing", message="Extracting videos from database", progress=2)
     
@@ -493,25 +527,27 @@ def edit_multi_task(
             print(f"[ERROR] Failed to query videos from database: {str(e)}")
             raise
         
-        if not rows:
+        if rows:
+            # Extract videos to disk
+            video_paths = []
+            for row in rows:
+                try:
+                    file_index = row['file_index']
+                    file_data = row['file_data']
+                    video_path = os.path.join(job_dir, f"video{file_index}.mp4")
+                    with open(video_path, 'wb') as f:
+                        f.write(file_data)
+                    video_paths.append(video_path)
+                    print(f"[DEBUG] Extracted video {file_index} from DB: {video_path} ({len(file_data)} bytes)")
+                except Exception as e:
+                    print(f"[ERROR] Failed to extract video {file_index}: {str(e)}")
+                    raise
+
+            print(f"[DEBUG] Extracted {len(video_paths)} videos from DB")
+        elif video_paths:
+            print("[WARN] No DB videos found; falling back to provided file paths")
+        else:
             raise FileNotFoundError(f"No videos found in database for job {job_id}")
-        
-        # Extract videos to disk
-        video_paths = []
-        for row in rows:
-            try:
-                file_index = row['file_index']
-                file_data = row['file_data']
-                video_path = os.path.join(job_dir, f"video{file_index}.mp4")
-                with open(video_path, 'wb') as f:
-                    f.write(file_data)
-                video_paths.append(video_path)
-                print(f"[DEBUG] Extracted video {file_index} from DB: {video_path} ({len(file_data)} bytes)")
-            except Exception as e:
-                print(f"[ERROR] Failed to extract video {file_index}: {str(e)}")
-                raise
-        
-        print(f"[DEBUG] Extracted {len(video_paths)} videos from DB")
         
     except Exception as e:
         print(f"[ERROR] Failed to extract videos: {str(e)}")

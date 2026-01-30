@@ -68,6 +68,22 @@ LiveEditProject/
 **Framework:** Flask  
 **API Server:** http://localhost:5000
 
+## 🧭 System Architecture Diagram
+
+```mermaid
+flowchart LR
+  User((User)) --> FE[React Frontend (Vite)]
+  FE -->|HTTPS /api/*| API[Flask API (Gunicorn)]
+  API -->|Queue jobs| Redis[(Redis / Upstash)]
+  Worker[Celery Worker] -->|Consume jobs| Redis
+  Worker -->|AI calls| Gemini[Google Gemini API]
+  Worker -->|FFmpeg processing| FFmpeg[FFmpeg]
+  API -->|Read/Write| DB[(Neon PostgreSQL)]
+  Worker -->|Read/Write| DB
+  API -->|Serve results| FE
+  FE -->|Uploads| API
+```
+
 ### Endpoints
 
 #### Health Check
