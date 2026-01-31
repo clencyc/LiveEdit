@@ -580,7 +580,15 @@ def edit_multi_task(
         else:
             print("[DEBUG] No audio file expected for job")
             audio_path = None
-
+        # Build clip_metas for prompt
+        clip_metas = []
+        for i, path in enumerate(video_paths):
+            duration = probe_duration(path)
+            clip_metas.append({
+                "name": os.path.basename(path),
+                "duration": duration if duration else "unknown"
+            })
+            print(f"[DEBUG] Video {i}: {path} (duration: {duration}s)")
 
         prompt = build_multi_edit_prompt(user_prompt, clip_metas)
         update_job(job_id, progress=10, message="Getting AI edit plan (may retry if API overloaded)")

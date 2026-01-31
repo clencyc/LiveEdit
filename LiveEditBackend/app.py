@@ -702,138 +702,112 @@ def chat():
         print(f"Error in chat: {str(e)}")
         return jsonify({'error': str(e)}), 500
 
-if __name__ == '__main__':
+@app.route('/api/edit-video', methods=['POST'])
+def edit_video():
+    """
+    Apply edits to a video based on AI suggestions
 
-    @app.route('/api/edit-video', methods=['POST'])
-    def edit_video():
-        """
-        Apply edits to a video based on AI suggestions
-    
-        Expected form data:
-        - video_file: The video file to edit
-        - edit_plan: JSON string containing edit instructions
-        - audio_file (optional): Audio file to add to video
-        - audio_start (optional): Timestamp to start audio (HH:MM:SS or MM:SS)
-        - audio_duck_db (optional): Reduce original audio by X dB (default 0)
-        """
-        try:
-            if 'video_file' not in request.files:
-                return jsonify({'error': 'No video file provided'}), 400
+    Expected form data:
+    - video_file: The video file to edit
+    - edit_plan: JSON string containing edit instructions
+    - audio_file (optional): Audio file to add to video
+    - audio_start (optional): Timestamp to start audio (HH:MM:SS or MM:SS)
+    - audio_duck_db (optional): Reduce original audio by X dB (default 0)
+    """
+    try:
+        if 'video_file' not in request.files:
+            return jsonify({'error': 'No video file provided'}), 400
 
-            video_file = request.files['video_file']
-            edit_plan_str = request.form.get('edit_plan', '[]')
-            audio_file = request.files.get('audio_file', None)
-            audio_start = request.form.get('audio_start', '00:00')
-            audio_duck_db = float(request.form.get('audio_duck_db', '0'))
+        video_file = request.files['video_file']
+        edit_plan_str = request.form.get('edit_plan', '[]')
+        audio_file = request.files.get('audio_file', None)
+        audio_start = request.form.get('audio_start', '00:00')
+        audio_duck_db = float(request.form.get('audio_duck_db', '0'))
 
-            if video_file.filename == '':
-                return jsonify({'error': 'No selected file'}), 400
-
-            try:
-                edit_plan = json.loads(edit_plan_str)
-            except json.JSONDecodeError:
-                return jsonify({'error': 'Invalid edit plan JSON'}), 400
-
-            has_audio_cue = any(isinstance(e, dict) and e.get('type') == 'audio_cue' for e in edit_plan or [])
-            if has_audio_cue and audio_file is None:
-                return jsonify({'error': 'Audio cue requested but no audio file provided. Select/import an audio effect before rendering.'}), 400
-
-            if edit_plan:
-                cue_times = [e.get('time') for e in edit_plan if isinstance(e, dict) and e.get('type') == 'audio_cue' and e.get('time')]
-                if cue_times and audio_start == '00:00':
-                    audio_start = cue_times[0]
-
-            job_id = secrets.token_hex(16)
-            job_dir = os.path.join(JOB_WORKDIR, job_id)
-            os.makedirs(job_dir, exist_ok=True)
-
-            video_filename = secure_filename(video_file.filename) or 'input_video.mp4'
-            video_path = os.path.join(job_dir, video_filename)
-            video_file.save(video_path)
-            # Ensure file is written to disk before proceeding
-            if not os.path.exists(video_path):
-                raise IOError(f"Failed to save video file: {video_path}")
-
-            audio_path = None
-            if audio_file:
-                audio_filename = secure_filename(audio_file.filename) or 'effect_audio.mp3'
-                audio_path = os.path.join(job_dir, audio_filename)
-                audio_file.save(audio_path)
-                # Ensure audio file is written to disk
-                if not os.path.exists(audio_path):
-                    raise IOError(f"Failed to save audio file: {audio_path}")
-
-            conn = get_db_connection()
-            cur = conn.cursor()
-            cur.execute(
-                """
-                INSERT INTO video_jobs (job_id, job_type, status, progress, message)
-                VALUES (%s, %s, %s, %s, %s)
-                """,
-                (job_id, 'edit', 'queued', 0, 'Queued for rendering')
-            )
-            conn.commit()
-            cur.close()
-            conn.close()
-
-            edit_video_task.delay(job_id, video_path, edit_plan, audio_path, audio_start, audio_duck_db)
-
-            return jsonify({
-                'job_id': job_id,
-                'status': 'queued',
-                'job_type': 'edit',
-                'message': 'Video render queued'
-            }), 202
-
-        except Exception as e:
-            print(f"Error queuing video edit: {str(e)}")
-            import traceback
-            traceback.print_exc()
-            return jsonify({'error': str(e)}), 500
-
-    def build_ffmpeg_with_audio(input_video, output_path, audio_path, audio_start, audio_duck_db):
-        """Build ffmpeg command to mix audio into video with optional ducking"""
-        audio_start_sec = time_to_seconds(audio_start)
-        
-        # Create audio filters: delay the audio and duck original if needed
-        if audio_duck_db < 0:
-            # Original audio volume reduction
-            volume_filter = f"volume={10**(audio_duck_db/20):.2f}"
-            audio_filter = f"[0:a]{volume_filter}[orig_audio];[1:a]adelay={audio_start_sec*1000}|{audio_start_sec*1000}[effect_audio];[orig_audio][effect_audio]amix=inputs=2:duration=first[audio]"
-        else:
-            # No ducking
-            audio_filter = f"[1:a]adelay={audio_start_sec*1000}|{audio_start_sec*1000}[effect_audio];[0:a][effect_audio]amix=inputs=2:duration=first[audio]"
-        
-        cmd = [
-            'ffmpeg',
-            '-i', input_video,
-            '-i', audio_path,
-            '-filter_complex', audio_filter,
-            '-map', '0:v:0',
-            '-map', '[audio]',
-            '-c:v', 'copy',
-            '-c:a', 'aac',
-            '-y', output_path
-        ]
-        return cmd
-
-    def time_to_seconds(time_str):
-        """Convert time strings (SS, MM:SS, HH:MM:SS) with optional decimals to seconds."""
-        if not time_str:
-            return 0.0
+        if video_file.filename == '':
+            return jsonify({'error': 'No selected file'}), 400
 
         try:
-            parts = [p.strip() for p in str(time_str).split(':') if p.strip() != '']
-            if len(parts) == 1:
-                return float(parts[0])
-            if len(parts) == 2:
-                return float(parts[0]) * 60 + float(parts[1])
-            if len(parts) == 3:
-                return float(parts[0]) * 3600 + float(parts[1]) * 60 + float(parts[2])
-        except ValueError:
-            return 0.0
+            edit_plan = json.loads(edit_plan_str)
+        except json.JSONDecodeError:
+            return jsonify({'error': 'Invalid edit plan JSON'}), 400
 
+        has_audio_cue = any(isinstance(e, dict) and e.get('type') == 'audio_cue' for e in edit_plan or [])
+        if has_audio_cue and audio_file is None:
+            return jsonify({'error': 'Audio cue requested but no audio file provided. Select/import an audio effect before rendering.'}), 400
+
+        if edit_plan:
+            cue_times = [e.get('time') for e in edit_plan if isinstance(e, dict) and e.get('type') == 'audio_cue' and e.get('time')]
+            if cue_times and audio_start == '00:00':
+                audio_start = cue_times[0]
+
+        job_id = secrets.token_hex(16)
+        job_dir = os.path.join(JOB_WORKDIR, job_id)
+        os.makedirs(job_dir, exist_ok=True)
+
+        video_filename = secure_filename(video_file.filename) or 'input_video.mp4'
+        video_path = os.path.join(job_dir, video_filename)
+        video_file.save(video_path)
+        # Ensure file is written to disk before proceeding
+        if not os.path.exists(video_path):
+            raise IOError(f"Failed to save video file: {video_path}")
+
+        audio_path = None
+        if audio_file:
+            audio_filename = secure_filename(audio_file.filename) or 'effect_audio.mp3'
+            audio_path = os.path.join(job_dir, audio_filename)
+            audio_file.save(audio_path)
+            # Ensure audio file is written to disk
+            if not os.path.exists(audio_path):
+                raise IOError(f"Failed to save audio file: {audio_path}")
+
+        conn = get_db_connection()
+        cur = conn.cursor()
+        cur.execute(
+            """
+            INSERT INTO video_jobs (job_id, job_type, status, progress, message)
+            VALUES (%s, %s, %s, %s, %s)
+            """,
+            (job_id, 'edit', 'queued', 0, 'Queued for rendering')
+        )
+        conn.commit()
+        cur.close()
+        conn.close()
+
+        edit_video_task.delay(job_id, video_path, edit_plan, audio_path, audio_start, audio_duck_db)
+
+        return jsonify({
+            'job_id': job_id,
+            'status': 'queued',
+            'job_type': 'edit',
+            'message': 'Video render queued'
+        }), 202
+
+    except Exception as e:
+        print(f"Error queuing video edit: {str(e)}")
+        import traceback
+        traceback.print_exc()
+        return jsonify({'error': str(e)}), 500
+
+
+def time_to_seconds(time_str):
+    """Convert time strings (SS, MM:SS, HH:MM:SS) with optional decimals to seconds."""
+    if not time_str:
         return 0.0
+
+    try:
+        parts = [p.strip() for p in str(time_str).split(':') if p.strip() != '']
+        if len(parts) == 1:
+            return float(parts[0])
+        if len(parts) == 2:
+            return float(parts[0]) * 60 + float(parts[1])
+        if len(parts) == 3:
+            return float(parts[0]) * 3600 + float(parts[1]) * 60 + float(parts[2])
+    except ValueError:
+        return 0.0
+
+    return 0.0
+
 
 # Paystack payment endpoints
 

@@ -34,6 +34,25 @@ def init_database():
         CREATE INDEX IF NOT EXISTS idx_video_files_job_id
         ON video_files (job_id);
     """)
+
+    # Create audio_files table for storing audio blobs
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS audio_files (
+            id SERIAL PRIMARY KEY,
+            job_id VARCHAR(64) NOT NULL,
+            filename VARCHAR(255) NOT NULL,
+            content_type VARCHAR(100),
+            file_data BYTEA NOT NULL,
+            file_size BIGINT,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            UNIQUE(job_id)
+        );
+    """)
+
+    cur.execute("""
+        CREATE INDEX IF NOT EXISTS idx_audio_files_job_id
+        ON audio_files (job_id);
+    """)
     
     # Create audio_effects table
     cur.execute("""
