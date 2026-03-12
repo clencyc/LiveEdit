@@ -12,6 +12,8 @@ import AuthForm from './components/AuthForm';
 import { SubscriptionPlans } from './components/SubscriptionPlans';
 import { PaymentModal } from './components/PaymentModal';
 import { useSubscription } from './hooks/useSubscription';
+import ProjectsView from './components/ProjectsView';
+import WorkflowCanvas from './components/WorkflowCanvas';
 
 declare global {
   interface AIStudio {
@@ -26,7 +28,7 @@ declare global {
 const App: React.FC = () => {
   const [mode, setMode] = useState<AppMode>(AppMode.CHAT);
   const [assets, setAssets] = useState<MediaAsset[]>([]);
-  const [isSidebarOpen, setIsSidebarOpen] = useState(true);
+  const [isSidebarOpen] = useState(true);
   const [showLanding, setShowLanding] = useState(true);
   const [showAuthForm, setShowAuthForm] = useState(false);
   const [isAuthenticated, setIsAuthenticated] = useState(false);
@@ -34,11 +36,12 @@ const App: React.FC = () => {
   const [showSubscriptionPlans, setShowSubscriptionPlans] = useState(false);
   const [showPaymentModal, setShowPaymentModal] = useState(false);
   const [selectedPlan, setSelectedPlan] = useState<{ id: number; name: string; price: number } | null>(null);
+  const [showProjects, setShowProjects] = useState(false);
+  const [currentProjectId, setCurrentProjectId] = useState<string | null>(null);
 
-  const { subscription, loading: subscriptionLoading, hasAccess, refetch: refetchSubscription } = useSubscription(userEmail);
+  const { subscription, refetch: refetchSubscription } = useSubscription(userEmail);
 
   useEffect(() => {
-    // Check if user is already authenticated (from localStorage)
     const authToken = localStorage.getItem('authToken');
     const savedEmail = localStorage.getItem('userEmail');
     if (authToken && savedEmail) {
@@ -70,19 +73,20 @@ const App: React.FC = () => {
     setUserEmail('');
     setShowLanding(true);
     setShowAuthForm(false);
+    setShowProjects(false);
+    setCurrentProjectId(null);
     localStorage.removeItem('authToken');
     localStorage.removeItem('userEmail');
   };
 
   const handleSubscribe = async (planId: number) => {
-    // Fetch plan details for modal
     try {
       const response = await fetch(`${import.meta.env.VITE_BACKEND_URL || 'https://liveedit.onrender.com'}/api/payments/plans`, {
         credentials: 'include'
       });
       const plans = await response.json();
       const plan = plans.find((p: any) => p.id === planId);
-      
+
       if (plan) {
         setSelectedPlan({ id: plan.id, name: plan.name, price: plan.price });
         setShowPaymentModal(true);
@@ -92,12 +96,50 @@ const App: React.FC = () => {
     }
   };
 
+  const handleNavigateToProjects = () => {
+    setShowProjects(true);
+    setCurrentProjectId(null);
+  };
+
+  const handleOpenProject = (projectId: string) => {
+    setCurrentProjectId(projectId);
+    setShowProjects(false);
+  };
+
+  const handleBackFromWorkflow = () => {
+    setCurrentProjectId(null);
+    setShowProjects(true);
+  };
+
+  const handleBackFromProjects = () => {
+    setShowProjects(false);
+  };
+
   if (showLanding && !showAuthForm) {
     return <LandingPage onStart={() => setShowAuthForm(true)} />;
   }
 
   if (showLanding && showAuthForm && !isAuthenticated) {
     return <AuthForm onAuthSuccess={handleAuthSuccess} />;
+  }
+
+  if (currentProjectId && !showProjects) {
+    return (
+      <WorkflowCanvas
+        projectId={currentProjectId}
+        onBack={handleBackFromWorkflow}
+      />
+    );
+  }
+
+  if (showProjects && !currentProjectId) {
+    return (
+      <ProjectsView
+        userEmail={userEmail}
+        onOpenProject={handleOpenProject}
+        onBack={handleBackFromProjects}
+      />
+    );
   }
 
   if (showSubscriptionPlans) {
@@ -123,7 +165,6 @@ const App: React.FC = () => {
 
   return (
     <div className="flex flex-col h-screen editor-bg text-neutral-300 overflow-hidden">
-      {/* Header */}
       <header className="h-12 border-b border-neutral-800 bg-[#111] flex items-center justify-between px-4 z-50 shrink-0">
         <div className="flex items-center gap-6">
           <div className="flex items-center gap-2">
@@ -132,7 +173,7 @@ const App: React.FC = () => {
             </div>
             <h1 className="text-sm font-bold tracking-tight uppercase text-white">Live Edit <span className="text-[#00ff41]">v2.5</span></h1>
           </div>
-          
+
           <nav className="flex items-center">
             {[
               { id: AppMode.CHAT, label: 'Chat', icon: 'fa-message' },
@@ -144,8 +185,8 @@ const App: React.FC = () => {
                 key={item.id}
                 onClick={() => handleModeChange(item.id)}
                 className={`px-4 h-12 text-[11px] font-bold uppercase tracking-widest border-x border-transparent transition-all ${
-                  mode === item.id 
-                    ? 'bg-[#1a1a1a] text-white border-neutral-800 border-b-2 border-b-[#00ff41]' 
+                  mode === item.id
+                    ? 'bg-[#1a1a1a] text-white border-neutral-800 border-b-2 border-b-[#00ff41]'
                     : 'text-neutral-500 hover:text-neutral-300 hover:bg-[#1a1a1a]'
                 }`}
               >
@@ -182,12 +223,12 @@ const App: React.FC = () => {
         </div>
       </header>
 
-      {/* Main Content Area */}
       <div className="flex-1 flex overflow-hidden">
-        <MediaSidebar 
-          isOpen={isSidebarOpen} 
-          assets={assets} 
-          onAddAsset={handleAddAsset} 
+        <MediaSidebar
+          isOpen={isSidebarOpen}
+          assets={assets}
+          onAddAsset={handleAddAsset}
+          onNavigateToProjects={handleNavigateToProjects}
         />
 
         <main className="flex-1 relative overflow-hidden">
@@ -198,7 +239,6 @@ const App: React.FC = () => {
         </main>
       </div>
 
-      {/* Status Bar */}
       <footer className="h-6 bg-[#0a0a0a] border-t border-neutral-800 flex items-center justify-between px-3 text-[10px] font-mono text-neutral-600">
         <div className="flex gap-4">
           <span>FPS: 60.0</span>
@@ -208,7 +248,6 @@ const App: React.FC = () => {
         <div>PRO_STATION_ALPHA</div>
       </footer>
 
-      {/* Payment Modal */}
       {showPaymentModal && selectedPlan && (
         <PaymentModal
           isOpen={showPaymentModal}

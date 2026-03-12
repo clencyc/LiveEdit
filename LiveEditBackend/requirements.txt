@@ -98,3 +98,5 @@ wcwidth==0.3.4
 websockets==14.2
 Werkzeug==3.1.5
 gunicorn==21.2.0
+google-cloud-storage==2.19.0
+google-cloud-videointelligence==2.13.0

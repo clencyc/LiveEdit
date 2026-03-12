@@ -6,34 +6,31 @@ import time
 from datetime import datetime
 from typing import Any, Dict, Optional, List
 
-from google import genai
 import psycopg2
 from psycopg2.extras import RealDictCursor
 from dotenv import load_dotenv
 
+from ai_client import get_genai_client, get_text_model_name
 from celery_config import celery_app
 
 load_dotenv()
 
-# Initialize Gemini 3 client with API key
-API_KEY = os.getenv("GEMINI_API_KEY")
-if not API_KEY:
-    raise ValueError("GEMINI_API_KEY not found in .env file")
-
-client = genai.Client(api_key=API_KEY)
+# Initialize shared GenAI client (Vertex AI or Developer API based on env)
+client = get_genai_client()
+TEXT_MODEL_NAME = get_text_model_name()
 
 DATABASE_URL = os.getenv("DATABASE_URL")
 JOB_WORKDIR = os.getenv("JOB_WORKDIR", "/tmp/liveedit_jobs")
 
 
-def call_gemini_with_retry(contents, model="gemini-3-flash-preview", max_retries=3, initial_wait=2, job_id=None, update_fn=None):
+def call_gemini_with_retry(contents, model=TEXT_MODEL_NAME, max_retries=3, initial_wait=2, job_id=None, update_fn=None):
     """
     Call Gemini API with exponential backoff retry logic.
     Handles transient errors like 503 UNAVAILABLE.
     
     Args:
         contents: The content to send to the model
-        model: The model to use (default: gemini-3-flash-preview)
+        model: The model to use (default: configured text model)
         max_retries: Maximum number of retry attempts
         initial_wait: Initial wait time in seconds before first retry
         job_id: Optional job ID for status updates
@@ -71,7 +68,12 @@ def call_gemini_with_retry(contents, model="gemini-3-flash-preview", max_retries
             
             # Check if it's a retryable error (503, 429, timeout-like errors)
             is_retryable = any(x in error_str.lower() for x in ['503', '429', 'unavailable', 'overloaded', 'timeout', 'deadline'])
-            
+            # limit: 0 → free-tier permanently exhausted — never retry, fail fast
+            is_perm_exhausted = "limit: 0" in error_str or "free_tier_requests" in error_str
+
+            if is_perm_exhausted:
+                print(f"[ERROR] ✗ Free-tier quota permanently exhausted (limit: 0). Not retrying.")
+                raise last_error
             if attempt < max_retries and is_retryable:
                 wait_time = initial_wait * (2 ** attempt)  # Exponential backoff: 2, 4, 8, ...
                 print(f"[RETRY] ✗ API temporarily unavailable (attempt {attempt + 1}/{max_retries + 1})")
@@ -251,7 +253,7 @@ def analyze_video_task(job_id: str, video_path: str, user_prompt: str) -> Dict[s
         )
         response = call_gemini_with_retry(
             contents=[video_part, analysis_prompt],
-            model="gemini-3-flash-preview",
+            model=TEXT_MODEL_NAME,
             max_retries=3
         )
         result = parse_model_response(response)
@@ -594,7 +596,7 @@ def edit_multi_task(
         update_job(job_id, progress=10, message="Getting AI edit plan (may retry if API overloaded)")
         response = call_gemini_with_retry(
             contents=prompt,
-            model="gemini-3-flash-preview",
+            model=TEXT_MODEL_NAME,
             max_retries=5,  # Try up to 6 times total (initial + 5 retries)
             initial_wait=3,  # Wait 3, 6, 12, 24, 48 seconds between retries
             job_id=job_id,
