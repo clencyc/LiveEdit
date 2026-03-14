@@ -1,5 +1,6 @@
 import React, { useEffect, useState } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
+import { requireBackendUrl } from '../services/api';
 
 interface PaymentModalProps {
   isOpen: boolean;
@@ -27,7 +28,7 @@ export const PaymentModal: React.FC<PaymentModalProps> = ({
 
     try {
       // Initialize payment
-      const response = await fetch(`${import.meta.env.VITE_BACKEND_URL || 'https://liveedit.onrender.com'}/api/payments/initialize`, {
+      const response = await fetch(`${requireBackendUrl()}/api/payments/initialize`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',

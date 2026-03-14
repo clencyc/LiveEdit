@@ -1,5 +1,6 @@
 import React, { useEffect, useState } from 'react';
 import { motion } from 'framer-motion';
+import { requireBackendUrl } from '../services/api';
 
 interface Plan {
   id: number;
@@ -37,7 +38,7 @@ export const SubscriptionPlans: React.FC<SubscriptionPlansProps> = ({
 
   const fetchPlans = async () => {
     try {
-      const response = await fetch(`${import.meta.env.VITE_BACKEND_URL || 'https://liveedit.onrender.com'}/api/payments/plans`, {
+      const response = await fetch(`${requireBackendUrl()}/api/payments/plans`, {
         credentials: 'include'
       });
       if (!response.ok) throw new Error('Failed to fetch plans');

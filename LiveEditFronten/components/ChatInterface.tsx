@@ -3,6 +3,7 @@ import React, { useState, useRef, useEffect } from 'react';
 import { getAiClient, chatWithBackend, analyzeVideoWithBackend, editVideoWithBackend } from '../services/gemini';
 import { ChatMessage, MediaAsset } from '../types';
 import CreativePulse from './CreativePulse';
+import { requireBackendUrl } from '../services/api';
 
 interface ChatInterfaceProps {
   onAddAsset: (asset: MediaAsset) => void
@@ -90,7 +91,7 @@ const ChatInterface: React.FC<ChatInterfaceProps> = ({ onAddAsset }) => {
 
   useEffect(() => {
     // Fetch audio library from backend
-    fetch(`${import.meta.env.VITE_BACKEND_URL || 'https://liveedit.onrender.com'}/api/audio-effects`, {
+    fetch(`${requireBackendUrl()}/api/audio-effects`, {
       credentials: 'include'
     })
       .then(res => res.json())
@@ -108,7 +109,7 @@ const ChatInterface: React.FC<ChatInterfaceProps> = ({ onAddAsset }) => {
 
   const loadAudioLibrary = async () => {
     try {
-      const response = await fetch(`${import.meta.env.VITE_BACKEND_URL || 'https://liveedit.onrender.com'}/api/audio-effects`, {
+      const response = await fetch(`${requireBackendUrl()}/api/audio-effects`, {
         credentials: 'include'
       });
       const data = await response.json();
@@ -132,7 +133,7 @@ const ChatInterface: React.FC<ChatInterfaceProps> = ({ onAddAsset }) => {
 
     setIsImporting(true);
     try {
-      const backendUrl = import.meta.env.VITE_BACKEND_URL || 'https://liveedit.onrender.com';
+      const backendUrl = requireBackendUrl();
       const response = await fetch(`${backendUrl}/api/audio-effects/import`, {
         method: 'POST',
         headers: {
@@ -315,7 +316,7 @@ const ChatInterface: React.FC<ChatInterfaceProps> = ({ onAddAsset }) => {
       if (selectedAudioId && !audioFile) {
         const selectedPreset = audioLibrary.find(a => a.id === selectedAudioId);
         if (selectedPreset) {
-          const backendUrl = import.meta.env.VITE_BACKEND_URL || 'https://liveedit.onrender.com';
+          const backendUrl = requireBackendUrl();
           const audioResponse = await fetch(`${backendUrl}/api/audio-effects/${selectedPreset.filename}`, {
             credentials: 'include'
           });

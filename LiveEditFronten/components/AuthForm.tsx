@@ -1,4 +1,5 @@
 import React, { useState } from 'react';
+import { requireBackendUrl } from '../services/api';
 
 interface AuthFormProps {
   onAuthSuccess: (email: string) => void;
@@ -42,7 +43,7 @@ const AuthForm: React.FC<AuthFormProps> = ({ onAuthSuccess }) => {
 
     setLoading(true);
     try {
-      const backendUrl = import.meta.env.VITE_BACKEND_URL || 'https://liveedit.onrender.com';
+      const backendUrl = requireBackendUrl();
       const endpoint = isSignup ? '/api/auth/signup' : '/api/auth/login';
       
       const response = await fetch(`${backendUrl}${endpoint}`, {

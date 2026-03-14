@@ -1,4 +1,5 @@
 import { useState, useEffect } from 'react';
+import { requireBackendUrl } from '../services/api';
 
 interface Subscription {
   status: string;
@@ -55,7 +56,7 @@ export const useSubscription = (userEmail: string | null): UseSubscriptionResult
     try {
       setLoading(true);
       const response = await fetch(
-        `${import.meta.env.VITE_BACKEND_URL || 'https://liveedit.onrender.com'}/api/user/subscription?email=${encodeURIComponent(userEmail)}`,
+        `${requireBackendUrl()}/api/user/subscription?email=${encodeURIComponent(userEmail)}`,
         {
           credentials: 'include'
         }

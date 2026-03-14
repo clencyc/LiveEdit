@@ -3,11 +3,7 @@
  * =======================
  * Frontend API client for the Video Ingestion & Understanding backend.
  */
-
-const BACKEND_URL =
-  import.meta.env.VITE_BACKEND_URL ||
-  import.meta.env.VITE_API_URL ||
-  (import.meta.env.DEV ? "http://localhost:5000" : "https://liveedit.onrender.com");
+import { BACKEND_URL } from './api';
 
 export interface VideoAnalysis {
   duration_estimate?: string;

@@ -14,6 +14,7 @@ import { PaymentModal } from './components/PaymentModal';
 import { useSubscription } from './hooks/useSubscription';
 import ProjectsView from './components/ProjectsView';
 import WorkflowCanvas from './components/WorkflowCanvas';
+import { requireBackendUrl } from './services/api';
 
 declare global {
   interface AIStudio {
@@ -81,7 +82,7 @@ const App: React.FC = () => {
 
   const handleSubscribe = async (planId: number) => {
     try {
-      const response = await fetch(`${import.meta.env.VITE_BACKEND_URL || 'https://liveedit.onrender.com'}/api/payments/plans`, {
+      const response = await fetch(`${requireBackendUrl()}/api/payments/plans`, {
         credentials: 'include'
       });
       const plans = await response.json();
