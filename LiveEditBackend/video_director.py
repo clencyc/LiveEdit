@@ -25,6 +25,11 @@ from typing import Any, Dict, List, Optional
 
 from ai_client import get_genai_client, genai_types
 
+try:
+    import redis
+except Exception:
+    redis = None
+
 # Optional (only needed for render)
 try:
     from moviepy.editor import AudioFileClip, CompositeAudioClip, VideoFileClip, concatenate_videoclips
@@ -40,6 +45,46 @@ client = get_genai_client()
 
 
 _interaction_sessions: Dict[str, Dict[str, Any]] = {}
+
+REDIS_URL = os.getenv("REDIS_URL", "").strip()
+_redis_client = None
+if REDIS_URL and redis is not None:
+    try:
+        _redis_client = redis.from_url(REDIS_URL, decode_responses=True)
+    except Exception:
+        _redis_client = None
+
+
+def _session_key(session_id: str) -> str:
+    return f"liveedit:director:session:{session_id}"
+
+
+def _save_session(session: Dict[str, Any]) -> None:
+    sid = session.get("session_id")
+    if not sid:
+        return
+    _interaction_sessions[sid] = session
+    if _redis_client is not None:
+        try:
+            _redis_client.setex(_session_key(sid), 60 * 60 * 24, json.dumps(session))
+        except Exception:
+            pass
+
+
+def _load_session(session_id: str) -> Optional[Dict[str, Any]]:
+    session = _interaction_sessions.get(session_id)
+    if session:
+        return session
+    if _redis_client is not None:
+        try:
+            raw = _redis_client.get(_session_key(session_id))
+            if raw:
+                loaded = json.loads(raw)
+                _interaction_sessions[session_id] = loaded
+                return loaded
+        except Exception:
+            return None
+    return None
 
 
 def _resolve_video_model_name(model_name: Optional[str] = None) -> str:
@@ -112,7 +157,7 @@ def start_interaction_session(
 ) -> Dict[str, Any]:
     """Initialize a stateful video editing conversation session."""
     session_id = f"sess_{uuid.uuid4().hex[:16]}"
-    _interaction_sessions[session_id] = {
+    session = {
         "session_id": session_id,
         "created_at": datetime.utcnow().isoformat(),
         "gemini_file_uri": gemini_file_uri,
@@ -124,7 +169,8 @@ def start_interaction_session(
         "previous_interaction_id": None,
         "thought_signature": None,
     }
-    return _interaction_sessions[session_id]
+    _save_session(session)
+    return session
 
 
 def _build_interaction_prompt(session: Dict[str, Any], user_prompt: str) -> str:
@@ -183,7 +229,7 @@ def run_interaction_turn(session_id: str, user_prompt: str) -> Dict[str, Any]:
     this function can be upgraded to call it directly. Current implementation
     preserves equivalent state explicitly in session data.
     """
-    session = _interaction_sessions.get(session_id)
+    session = _load_session(session_id)
     if not session:
         raise ValueError(f"Session not found: {session_id}")
 
@@ -240,6 +286,7 @@ def run_interaction_turn(session_id: str, user_prompt: str) -> Dict[str, Any]:
                     "structured": data,
                 }
             )
+            _save_session(session)
 
             return {
                 "session_id": session_id,
@@ -317,7 +364,7 @@ def generate_structured_edit_plan(
     target_duration_seconds: Optional[float] = None,
 ) -> Dict[str, Any]:
     """Generate structured JSON edit decisions from conversation context."""
-    session = _interaction_sessions.get(session_id)
+    session = _load_session(session_id)
     if not session:
         raise ValueError(f"Session not found: {session_id}")
 
@@ -365,6 +412,7 @@ def generate_structured_edit_plan(
 
     session["latest_plan"] = plan
     session["latest_plan_at"] = datetime.utcnow().isoformat()
+    _save_session(session)
 
     return {
         "session_id": session_id,
@@ -455,7 +503,7 @@ def render_video_from_plan(
 
 
 def get_session(session_id: str) -> Dict[str, Any]:
-    s = _interaction_sessions.get(session_id)
+    s = _load_session(session_id)
     if not s:
         raise ValueError(f"Session not found: {session_id}")
     return s

@@ -43,19 +43,25 @@ load_dotenv()
 
 app = Flask(__name__)
 
+# Get frontend URL from environment (for production deployments)
+FRONTEND_URL = os.getenv('FRONTEND_URL', '')
+ALLOWED_ORIGINS = [
+    "http://localhost:3000",
+    "http://localhost:5173",
+    "http://127.0.0.1:3000",
+    "http://127.0.0.1:5173",
+    "https://liveedit.onrender.com",
+    "https://livedit.space",
+    "https://www.livedit.space",
+    "https://rare-decker-488711-c0.web.app",
+]
+if FRONTEND_URL:
+    ALLOWED_ORIGINS.append(FRONTEND_URL)
+
 # Configure CORS with proper settings for cookies and credentials
 CORS(app, 
      resources={r"/api/*": {
-         "origins": [
-             "http://localhost:3000",
-             "http://localhost:5173",
-             "http://127.0.0.1:3000",
-             "http://127.0.0.1:5173",
-             "https://liveedit.onrender.com",
-             "https://*.vercel.app",
-             "https://livedit.space",
-             "https://www.livedit.space"
-         ],
+         "origins": ALLOWED_ORIGINS,
          "methods": ["GET", "POST", "PUT", "DELETE", "OPTIONS"],
          "allow_headers": ["Content-Type", "Authorization"],
          "supports_credentials": True,
@@ -66,15 +72,7 @@ CORS(app,
 @app.after_request
 def after_request(response):
     origin = request.headers.get('Origin')
-    if origin in [
-        "http://localhost:3000",
-        "http://localhost:5173",
-        "http://127.0.0.1:3000",
-        "http://127.0.0.1:5173",
-        "https://liveedit.onrender.com",
-        "https://livedit.space",
-        "https://www.livedit.space"
-    ] or (origin and origin.endswith('.vercel.app')):
+    if origin in ALLOWED_ORIGINS or (origin and origin.endswith('.vercel.app')):
         response.headers['Access-Control-Allow-Origin'] = origin
         response.headers['Access-Control-Allow-Credentials'] = 'true'
         response.headers['Access-Control-Allow-Methods'] = 'GET, POST, PUT, DELETE, OPTIONS'
