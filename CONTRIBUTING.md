@@ -1,152 +1,112 @@
 # Contributing to LiveEdit
 
-Thank you for your interest in contributing to LiveEdit! We appreciate all contributions, whether they're bug reports, feature requests, documentation improvements, or code changes.
+Thank you for your interest in contributing to LiveEdit! This guide will help you get started with the development environment and explain our contribution process.
 
-## Getting Started
+## 🚀 Getting Started
 
 ### Prerequisites
-- Python 3.8+ (for backend)
-- Node.js 16+ and npm (for frontend)
-- Docker (optional, but recommended)
-- Git
+- **Git**
+- **Node.js 18+** and **npm**
+- **Python 3.10+**
+- **FFmpeg** (for video processing)
+- **Redis** (local or managed like Upstash)
+- **PostgreSQL** (local or managed like Neon)
 
-### Development Setup
+### Development Environment Setup
 
-#### Backend Setup
+#### 1. Fork and Clone
+```bash
+git clone https://github.com/your-username/LiveEdit.git
+cd LiveEdit
+```
+
+#### 2. Backend Setup
 ```bash
 cd LiveEditBackend
+python3 -m venv venv
+source venv/bin/activate  # On Windows: venv\Scripts\activate
 pip install -r requirements.txt
-python init_db.py
-export GOOGLE_APPLICATION_CREDENTIALS="path/to/credentials.json"
-python app.py
+cp .env.example .env      # Configure your environment variables
+python init_db.py         # Initialize the database
 ```
 
-#### Frontend Setup
+#### 3. Frontend Setup
 ```bash
-cd LiveEditFronten
+cd ../LiveEditFronten
 npm install
-npm run dev
+cp .env.local.example .env.local  # Configure backend URL and API keys
 ```
 
-For detailed backend and frontend deployment instructions, see [DEPLOYMENT.md](DEPLOYMENT.md).
+#### 4. Running the Application
+We provide helper scripts in the root directory:
+- `./start-backend.sh`: Starts the Flask API
+- `./start-frontend.sh`: Starts the Vite dev server
+- `./start-celery.sh`: Starts the Celery worker
 
-## Project Structure
+## 🧪 Testing
 
-```
-LiveEditProject/
-├── LiveEditBackend/          # Python Flask backend with AI integrations
-│   ├── app.py               # Main Flask application
-│   ├── video_tasks.py       # Celery task definitions
-│   ├── ai_client.py         # AI service integrations
-│   └── requirements.txt      # Python dependencies
-├── LiveEditFronten/          # React/TypeScript frontend
-│   ├── components/          # React components
-│   ├── services/            # API and external service clients
-│   ├── hooks/               # Custom React hooks
-│   └── package.json         # Node.js dependencies
-└── [Documentation files]     # Architecture, deployment guides, etc.
-```
+### Backend
+Currently, we use manual testing and specific scripts.
+- To test the API: `curl http://localhost:5000/health`
+- Run specific tests: `python -m pytest` (if applicable) or run individual test scripts in `LiveEditBackend/`.
 
-## Development Workflow
+### Frontend
+- Use `npm run dev` and verify changes in the browser.
+- Check the console for any TypeScript or React errors.
 
-1. **Fork and Clone**
-   ```bash
-   git clone https://github.com/yourusername/LiveEditProject.git
-   cd LiveEditProject
-   ```
+*Note: We are actively looking to improve our automated test coverage. Contributions in this area are highly welcome!*
 
-2. **Create a Feature Branch**
-   ```bash
-   git checkout -b feature/your-feature-name
-   ```
+## 🎨 Code Style Guidelines
 
-3. **Make Your Changes**
-   - Keep commits focused and atomic
-   - Write clear commit messages
-   - Follow the code style guidelines below
+### Python (Backend)
+- Follow [PEP 8](https://www.python.org/dev/peps/pep-0008/) style guide.
+- Use type hints where possible.
+- Use `black` or `ruff` for formatting.
 
-4. **Test Your Changes**
-   - Backend: Run unit tests and manual API testing
-   - Frontend: Test in dev server and verify UI/UX
-   - Test both locally and with Docker if possible
+### TypeScript/React (Frontend)
+- Use functional components and hooks.
+- Maintain strict TypeScript typing.
+- Use CamelCase for files and PascalCase for components.
+- Standard indentation: 2 spaces.
 
-5. **Push and Submit a Pull Request**
-   ```bash
-   git push origin feature/your-feature-name
-   ```
-   - Provide a clear description of your changes
-   - Reference any related issues
-   - Ensure CI/CD checks pass
+## 📝 Git Commit Conventions
 
-## Code Style Guidelines
+We follow the [Conventional Commits](https://www.conventionalcommits.org/) specification:
 
-### Backend (Python)
-- Follow PEP 8 conventions
-- Use meaningful variable and function names
-- Add docstrings to functions and classes
-- Keep functions focused and modular
+- `feat:` A new feature
+- `fix:` A bug fix
+- `docs:` Documentation only changes
+- `style:` Changes that do not affect the meaning of the code (white-space, formatting, missing semi-colons, etc)
+- `refactor:` A code change that neither fixes a bug nor adds a feature
+- `perf:` A code change that improves performance
+- `test:` Adding missing tests or correcting existing tests
+- `chore:` Changes to the build process or auxiliary tools and libraries such as documentation generation
 
-### Frontend (TypeScript/React)
-- Use functional components with hooks
-- Follow TypeScript strict mode
-- Use meaningful component and variable names
-- Keep components focused and reusable
-- Maintain consistent formatting (consider using Prettier)
+**Example:**
+`feat: add video clipping functionality`
 
-## Key Features to Understand
+## 🔄 Pull Request Process
 
-### Video Processing
-- Async task handling with Celery (`video_tasks.py`)
-- Video ingestion pipeline (`video_ingestion.py`)
-- Director workflow system (`video_director.py`)
+1. **Create a Branch**: `git checkout -b feature/your-feature-name` or `fix/your-bug-name`.
+2. **Commit Changes**: Follow the commit conventions.
+3. **Verify Locally**: Ensure both frontend and backend run correctly.
+4. **Push**: `git push origin your-branch-name`.
+5. **Open PR**: Provide a clear description of the changes, the problem solved, and any relevant issue numbers.
+6. **Code Review**: Address any feedback from the maintainers.
 
-### AI Integration
-- Gemini API integration (`services/gemini.ts`, `services/geminiLive.ts`)
-- Backend AI client (`ai_client.py`)
-- See [GEMINI_RETRY_FIX.md](GEMINI_RETRY_FIX.md) for known issues
+## 🐛 Reporting Bugs
 
-### Real-time Features
-- Live editing interface (`LiveInterface.tsx`)
-- WebSocket communications via DirectorChatPanel
+If you find a bug, please open an issue using the **Bug Report** template. Include:
+- A clear, descriptive title.
+- Steps to reproduce.
+- Expected vs. actual behavior.
+- Screenshots if applicable.
+- Environment details (OS, Browser, etc.).
 
-## Important Considerations
+## 💡 Feature Requests
 
-- **Authentication**: Firebase integration for user authentication
-- **Subscriptions**: Tiered subscription system with payment integration
-- **Environment Variables**: Backend requires Google Cloud credentials
-- **Database**: Redis for caching, main DB (see deployment docs)
-
-## Testing
-
-Before submitting a PR:
-- Test new features thoroughly
-- Verify existing functionality isn't broken
-- Test with different screen sizes (frontend)
-- Check API responses (backend)
-
-## Reporting Issues
-
-When reporting bugs, please include:
-- Steps to reproduce
-- Expected vs. actual behavior
-- Screenshots/videos if applicable
-- Environment details (OS, browser, Python version, etc.)
-
-## Documentation
-
-- Update relevant documentation files when making changes
-- Keep README.md current
-- Add comments for complex logic
-- Update this guide if you change the project structure
-
-## Questions?
-
-Feel free to open an issue for clarification or discussion before starting work on a feature.
-
-## License
-
-By contributing to LiveEdit, you agree that your contributions will be licensed under the same license as the project.
+We love hearing new ideas! Please use the **Feature Request** template to suggest improvements or new features.
 
 ---
 
-Thank you for helping make LiveEdit better! 🚀
+Thank you for contributing to LiveEdit! 🎬
