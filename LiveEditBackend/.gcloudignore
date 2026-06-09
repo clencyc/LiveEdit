@@ -1,0 +1,12 @@
+# This file specifies files that should NOT be uploaded to Cloud Run
+__pycache__
+*.pyc
+.pytest_cache
+.git
+.gitignore
+.venv
+venv/
+env/
+node_modules/
+.DS_Store
+*.local

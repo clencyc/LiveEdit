@@ -6,9 +6,10 @@ interface MediaSidebarProps {
   isOpen: boolean;
   assets: MediaAsset[];
   onAddAsset: (asset: MediaAsset) => void;
+  onNavigateToProjects?: () => void;
 }
 
-const MediaSidebar: React.FC<MediaSidebarProps> = ({ isOpen, assets, onAddAsset }) => {
+const MediaSidebar: React.FC<MediaSidebarProps> = ({ isOpen, assets, onAddAsset, onNavigateToProjects }) => {
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   const handleFileUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -36,6 +37,17 @@ const MediaSidebar: React.FC<MediaSidebarProps> = ({ isOpen, assets, onAddAsset 
 
   return (
     <aside className="w-64 border-r border-neutral-800 bg-[#111] flex flex-col z-40 h-full shrink-0">
+      {/* Projects Section */}
+      <div className="p-3 border-b border-neutral-800">
+        <button
+          onClick={onNavigateToProjects}
+          className="w-full px-3 py-2 text-[10px] font-bold uppercase tracking-widest text-neutral-400 hover:text-[#00ff41] hover:bg-neutral-900 transition-all border border-neutral-800 hover:border-[#00ff41] flex items-center justify-center gap-2"
+        >
+          <i className="fas fa-folder-open"></i>
+          Projects
+        </button>
+      </div>
+
       <div className="p-3 border-b border-neutral-800 flex items-center justify-between">
         <h2 className="text-[10px] font-bold uppercase tracking-[0.2em] text-neutral-500">Master Bin</h2>
         <button 

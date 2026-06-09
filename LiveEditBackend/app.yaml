@@ -1,0 +1,13 @@
+runtime: python313
+entrypoint: gunicorn -b :$PORT app:app --timeout 120 --workers 4
+
+env: standard
+
+env_variables:
+  FLASK_ENV: "production"
+  PYTHONUNBUFFERED: "1"
+
+automatic_scaling:
+  max_instances: 10
+  min_instances: 1
+

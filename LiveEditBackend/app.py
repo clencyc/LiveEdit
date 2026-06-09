@@ -1,6 +1,5 @@
 from flask import Flask, request, jsonify, send_file
 from flask_cors import CORS
-import google.generativeai as genai
 import json
 import os
 import subprocess
@@ -12,28 +11,57 @@ from psycopg2.extras import RealDictCursor
 import hashlib
 import hmac
 import secrets
-from google.genai import Client
 from werkzeug.utils import secure_filename
 
+from ai_client import (
+    API_KEY,
+    describe_ai_backend,
+    genai_types,
+    get_genai_client,
+    get_text_model_name,
+    get_video_model_name,
+    using_vertex_ai,
+)
 from video_tasks import analyze_video_task, edit_video_task, edit_multi_task
+from video_ingestion import (
+    full_video_ingestion,
+    query_cached_video,
+    upload_bytes_to_gemini_files,
+    analyze_video_with_gemini,
+    get_scene_summary,
+    extract_video_intelligence_metadata,
+)
+from video_director import (
+    start_interaction_session,
+    run_interaction_turn,
+    generate_structured_edit_plan,
+    render_video_from_plan,
+    get_session,
+)
 
 load_dotenv()
 
 app = Flask(__name__)
 
+# Get frontend URL from environment (for production deployments)
+FRONTEND_URL = os.getenv('FRONTEND_URL', '')
+ALLOWED_ORIGINS = [
+    "http://localhost:3000",
+    "http://localhost:5173",
+    "http://127.0.0.1:3000",
+    "http://127.0.0.1:5173",
+    "https://liveedit.onrender.com",
+    "https://livedit.space",
+    "https://www.livedit.space",
+    "https://rare-decker-488711-c0.web.app",
+]
+if FRONTEND_URL:
+    ALLOWED_ORIGINS.append(FRONTEND_URL)
+
 # Configure CORS with proper settings for cookies and credentials
 CORS(app, 
      resources={r"/api/*": {
-         "origins": [
-             "http://localhost:3000",
-             "http://localhost:5173",
-             "http://127.0.0.1:3000",
-             "http://127.0.0.1:5173",
-             "https://liveedit.onrender.com",
-             "https://*.vercel.app",
-             "https://livedit.space",
-             "https://www.livedit.space"
-         ],
+         "origins": ALLOWED_ORIGINS,
          "methods": ["GET", "POST", "PUT", "DELETE", "OPTIONS"],
          "allow_headers": ["Content-Type", "Authorization"],
          "supports_credentials": True,
@@ -44,15 +72,7 @@ CORS(app,
 @app.after_request
 def after_request(response):
     origin = request.headers.get('Origin')
-    if origin in [
-        "http://localhost:3000",
-        "http://localhost:5173",
-        "http://127.0.0.1:3000",
-        "http://127.0.0.1:5173",
-        "https://liveedit.onrender.com",
-        "https://livedit.space",
-        "https://www.livedit.space"
-    ] or (origin and origin.endswith('.vercel.app')):
+    if origin in ALLOWED_ORIGINS or (origin and origin.endswith('.vercel.app')):
         response.headers['Access-Control-Allow-Origin'] = origin
         response.headers['Access-Control-Allow-Credentials'] = 'true'
         response.headers['Access-Control-Allow-Methods'] = 'GET, POST, PUT, DELETE, OPTIONS'
@@ -61,20 +81,19 @@ def after_request(response):
     return response
 
 # Configure Gemini API
-API_KEY = os.getenv('GEMINI_API_KEY')
-if not API_KEY:
-    raise ValueError("GEMINI_API_KEY not found in .env file")
-
-genai.configure(api_key=API_KEY)
-model = genai.GenerativeModel("gemini-3-flash-preview")
-# Use Gemini 3 Flash for fast video analysis
-video_model = genai.GenerativeModel("gemini-3-flash-preview")
+TEXT_MODEL_NAME = get_text_model_name()
+VIDEO_MODEL_NAME = get_video_model_name()
+ai_client = get_genai_client()
+print(f"[AI] Using backend: {describe_ai_backend()}")
 
 # Image generation model
 IMAGE_MODEL_ID = os.getenv('GEMINI_IMAGE_MODEL', 'imagen-3.0-generate-001')
 
 # Helper to get AI client for image generation
 def getAiClient():
+    if not API_KEY and using_vertex_ai():
+        raise ValueError("Image generation route still requires GEMINI_API_KEY.")
+    from google.genai import Client
     return Client(api_key=API_KEY)
 
 # Database connections
@@ -667,7 +686,10 @@ def chat():
         user_message = data['message']
         
         # Generate response
-        response = model.generate_content(user_message)
+        response = ai_client.models.generate_content(
+            model=TEXT_MODEL_NAME,
+            contents=user_message,
+        )
         
         # Extract text from response safely
         response_text = ''
@@ -1296,6 +1318,433 @@ def generate_image():
         import traceback
         traceback.print_exc()
         return jsonify({'error': f'Image generation failed: {str(e)}'}), 500
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# VIDEO INGESTION & UNDERSTANDING ROUTES
+# ═══════════════════════════════════════════════════════════════════════════════
+
+# In-memory store for Gemini file objects so we can reference them in follow-up calls.
+# In production you'd persist this to your DB.
+_gemini_files_store: dict = {}
+_rendered_video_store: dict = {}
+
+@app.route('/api/video-ingestion/upload', methods=['POST'])
+def video_ingestion_upload():
+    """
+    Upload a video for deep AI analysis.
+
+    Accepts multipart/form-data with:
+      - file: the video file
+      - use_gcs (optional):  "true" to also upload to GCS
+      - use_vi  (optional):  "true" to also run Video Intelligence
+      - vi_features (optional): comma-separated list of features
+      - custom_prompt (optional): override the default analysis prompt
+      - duration (optional): video duration in seconds (enables caching for >10 min)
+
+    Returns JSON with full analysis results.
+    """
+    try:
+        if 'file' not in request.files:
+            return jsonify({'error': 'No file provided'}), 400
+
+        file = request.files['file']
+        if not file.filename:
+            return jsonify({'error': 'Empty filename'}), 400
+
+        filename = secure_filename(file.filename)
+        file_data = file.read()
+        mime_type = file.content_type or 'video/mp4'
+
+        # Parse options
+        use_gcs = request.form.get('use_gcs', 'false').lower() == 'true'
+        use_vi = request.form.get('use_vi', 'false').lower() == 'true'
+        vi_features_raw = request.form.get('vi_features', '')
+        vi_features = [f.strip() for f in vi_features_raw.split(',') if f.strip()] or None
+        custom_prompt = request.form.get('custom_prompt', None)
+        duration = float(request.form.get('duration', 0))
+
+        print(f"[INGEST] Starting ingestion for {filename} ({len(file_data)} bytes, {duration}s)")
+
+        result = full_video_ingestion(
+            file_data=file_data,
+            filename=filename,
+            mime_type=mime_type,
+            video_duration_seconds=duration,
+            use_gcs=use_gcs,
+            use_video_intelligence=use_vi,
+            vi_features=vi_features,
+            custom_prompt=custom_prompt,
+        )
+
+        # Store the Gemini file URI for follow-up queries
+        if 'gemini_file_uri' in result:
+            _gemini_files_store[result['gemini_file_uri']] = {
+                'name': result.get('gemini_file_name'),
+                'uri': result['gemini_file_uri'],
+                'filename': filename,
+                'cache_name': result.get('cache_name'),
+                'duration': duration,
+            }
+
+        return jsonify(result), 200
+
+    except Exception as e:
+        error_msg = str(e)
+        print(f"[ERROR] Video ingestion failed: {error_msg}")
+        import traceback
+        traceback.print_exc()
+        
+        # Check if quota error
+        if "429" in error_msg or "RESOURCE_EXHAUSTED" in error_msg or "quota" in error_msg.lower() or "QUOTA_EXHAUSTED" in error_msg:
+            is_perm = "limit: 0" in error_msg or "free_tier_requests" in error_msg or "QUOTA_EXHAUSTED" in error_msg
+            return jsonify({
+                'error': 'QUOTA_EXHAUSTED' if is_perm else 'Gemini API quota exceeded',
+                'message': (
+                    'This request is still hitting Gemini Developer API free-tier quota. '
+                    'Configure Vertex AI in LiveEditBackend/.env and authenticate with '
+                    'Application Default Credentials.'
+                ) if is_perm else (
+                    'Free tier rate limit hit. Please wait a few minutes and try again.'
+                ),
+                'details': error_msg[:300]
+            }), 429
+        
+        return jsonify({'error': str(e)}), 500
+
+
+@app.route('/api/video-ingestion/query', methods=['POST'])
+def video_ingestion_query():
+    """
+    Send a follow-up question about a previously uploaded video.
+
+    JSON body:
+      - gemini_file_uri: URI from the initial upload
+      - prompt: your question / instruction
+
+    Uses context caching if available (much faster & cheaper for long videos).
+    """
+    try:
+        data = request.get_json()
+        if not data:
+            return jsonify({'error': 'Request body required'}), 400
+
+        gemini_file_uri = data.get('gemini_file_uri')
+        prompt = data.get('prompt')
+
+        if not gemini_file_uri or not prompt:
+            return jsonify({'error': 'gemini_file_uri and prompt are required'}), 400
+
+        stored = _gemini_files_store.get(gemini_file_uri)
+
+        # Try cached path first
+        try:
+            answer = query_cached_video(gemini_file_uri, prompt)
+        except ValueError:
+            # No cache – do a direct call with the file URI
+            response = ai_client.models.generate_content(
+                model=VIDEO_MODEL_NAME,
+                contents=[
+                    genai_types.Content(
+                        role="user",
+                        parts=[
+                            genai_types.Part.from_uri(
+                                file_uri=gemini_file_uri,
+                                mime_type="video/mp4",
+                            ),
+                            genai_types.Part.from_text(text=prompt),
+                        ],
+                    )
+                ],
+            )
+            answer = response.text
+
+        return jsonify({
+            'answer': answer,
+            'gemini_file_uri': gemini_file_uri,
+            'cached': stored.get('cache_name') is not None if stored else False,
+        }), 200
+
+    except Exception as e:
+        print(f"[ERROR] Video query failed: {e}")
+        return jsonify({'error': str(e)}), 500
+
+
+@app.route('/api/video-ingestion/scene-summary', methods=['POST'])
+def video_ingestion_scene_summary():
+    """
+    Get a detailed natural-language summary of a specific time segment.
+
+    JSON body:
+      - gemini_file_uri: URI from initial upload
+      - start: timestamp (e.g. "1:30")
+      - end:   timestamp (e.g. "2:45")
+    """
+    try:
+        data = request.get_json()
+        gemini_file_uri = data.get('gemini_file_uri')
+        start = data.get('start', '0:00')
+        end = data.get('end', '0:30')
+
+        if not gemini_file_uri:
+            return jsonify({'error': 'gemini_file_uri is required'}), 400
+
+        stored = _gemini_files_store.get(gemini_file_uri)
+        duration = stored.get('duration', 0) if stored else 0
+
+        # Build a lightweight file-like object with uri and mime_type
+        class _GeminiRef:
+            def __init__(self, uri):
+                self.uri = uri
+                self.mime_type = "video/mp4"
+                self.name = stored.get('name', '') if stored else ''
+
+        summary = get_scene_summary(
+            gemini_file=_GeminiRef(gemini_file_uri),
+            timestamp_start=start,
+            timestamp_end=end,
+            video_duration_seconds=duration,
+        )
+
+        return jsonify({
+            'summary': summary,
+            'segment': {'start': start, 'end': end},
+        }), 200
+
+    except Exception as e:
+        print(f"[ERROR] Scene summary failed: {e}")
+        return jsonify({'error': str(e)}), 500
+
+
+@app.route('/api/video-ingestion/video-intelligence', methods=['POST'])
+def video_ingestion_vi():
+    """
+    Run Vertex AI Video Intelligence on a GCS video (requires service account).
+
+    JSON body:
+      - gcs_uri: gs://bucket/path/to/video.mp4
+      - features (optional): list of features, e.g. ["LABEL_DETECTION","SHOT_CHANGE_DETECTION"]
+    """
+    try:
+        data = request.get_json()
+        gcs_uri = data.get('gcs_uri')
+        features = data.get('features')
+
+        if not gcs_uri:
+            return jsonify({'error': 'gcs_uri is required'}), 400
+
+        metadata = extract_video_intelligence_metadata(gcs_uri, features=features)
+        return jsonify(metadata), 200
+
+    except ImportError as ie:
+        return jsonify({'error': str(ie)}), 501
+    except Exception as e:
+        print(f"[ERROR] Video Intelligence failed: {e}")
+        return jsonify({'error': str(e)}), 500
+
+
+@app.route('/api/video-ingestion/files', methods=['GET'])
+def video_ingestion_list_files():
+    """List all uploaded Gemini files that are still available in the session."""
+    files = [
+        {
+            'gemini_file_uri': uri,
+            'filename': info.get('filename'),
+            'cache_name': info.get('cache_name'),
+            'duration': info.get('duration'),
+        }
+        for uri, info in _gemini_files_store.items()
+    ]
+    return jsonify({'files': files}), 200
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# CONVERSATIONAL VIDEO DIRECTOR (STATEFUL WORKFLOW)
+# ═══════════════════════════════════════════════════════════════════════════════
+
+@app.route('/api/video-director/session/start', methods=['POST'])
+def video_director_start_session():
+    """
+    Start a stateful conversational editing session for an uploaded Gemini video.
+
+    JSON body:
+      - gemini_file_uri (required)
+      - gemini_mime_type (optional)
+      - cache_name (optional)
+      - analysis (optional)
+      - video_intelligence (optional)
+    """
+    try:
+        data = request.get_json() or {}
+        gemini_file_uri = data.get('gemini_file_uri')
+        if not gemini_file_uri:
+            return jsonify({'error': 'gemini_file_uri is required'}), 400
+
+        stored = _gemini_files_store.get(gemini_file_uri, {})
+        session = start_interaction_session(
+            gemini_file_uri=gemini_file_uri,
+            gemini_mime_type=data.get('gemini_mime_type', 'video/mp4'),
+            cache_name=data.get('cache_name') or stored.get('cache_name'),
+            analysis=data.get('analysis') or {},
+            video_intelligence=data.get('video_intelligence') or {},
+        )
+
+        return jsonify({
+            'session_id': session['session_id'],
+            'gemini_file_uri': session['gemini_file_uri'],
+            'cache_name': session.get('cache_name'),
+            'previous_interaction_id': session.get('previous_interaction_id'),
+            'thought_signature': session.get('thought_signature'),
+            'created_at': session.get('created_at'),
+        }), 200
+    except Exception as e:
+        print(f"[ERROR] Failed to start director session: {e}")
+        return jsonify({'error': str(e)}), 500
+
+
+@app.route('/api/video-director/interaction', methods=['POST'])
+def video_director_interaction():
+    """
+    Continue conversational editing.
+
+    JSON body:
+      - session_id (required)
+      - prompt (required)
+    """
+    try:
+        data = request.get_json() or {}
+        session_id = data.get('session_id')
+        prompt = data.get('prompt')
+
+        if not session_id or not prompt:
+            return jsonify({'error': 'session_id and prompt are required'}), 400
+
+        result = run_interaction_turn(session_id=session_id, user_prompt=prompt)
+        return jsonify(result), 200
+    except ValueError as ve:
+        return jsonify({'error': str(ve)}), 404
+    except Exception as e:
+        print(f"[ERROR] Director interaction failed: {e}")
+        return jsonify({'error': str(e)}), 500
+
+
+@app.route('/api/video-director/plan', methods=['POST'])
+def video_director_plan():
+    """
+    Generate structured edit JSON (scene segmentation, highlights, pruning, selected clips).
+
+    JSON body:
+      - session_id (required)
+      - creative_brief (required)
+      - target_duration_seconds (optional)
+    """
+    try:
+        data = request.get_json() or {}
+        session_id = data.get('session_id')
+        creative_brief = data.get('creative_brief')
+        target_duration_seconds = data.get('target_duration_seconds')
+
+        if not session_id or not creative_brief:
+            return jsonify({'error': 'session_id and creative_brief are required'}), 400
+
+        result = generate_structured_edit_plan(
+            session_id=session_id,
+            creative_brief=creative_brief,
+            target_duration_seconds=target_duration_seconds,
+        )
+        return jsonify(result), 200
+    except ValueError as ve:
+        return jsonify({'error': str(ve)}), 404
+    except Exception as e:
+        print(f"[ERROR] Director plan generation failed: {e}")
+        return jsonify({'error': str(e)}), 500
+
+
+@app.route('/api/video-director/render', methods=['POST'])
+def video_director_render():
+    """
+    Render final video from structured edit plan.
+
+    multipart/form-data:
+      - video_file (required)
+      - edit_plan (required JSON string)
+      - audio_file (optional)
+    """
+    try:
+        if 'video_file' not in request.files:
+            return jsonify({'error': 'video_file is required'}), 400
+
+        video_file = request.files['video_file']
+        if not video_file.filename:
+            return jsonify({'error': 'No selected video file'}), 400
+
+        edit_plan_raw = request.form.get('edit_plan')
+        if not edit_plan_raw:
+            return jsonify({'error': 'edit_plan is required'}), 400
+
+        try:
+            edit_plan = json.loads(edit_plan_raw)
+        except json.JSONDecodeError:
+            return jsonify({'error': 'edit_plan must be valid JSON'}), 400
+
+        with tempfile.NamedTemporaryFile(suffix='.mp4', delete=False) as tmp_in:
+            video_file.save(tmp_in.name)
+            input_path = tmp_in.name
+
+        audio_path = None
+        if 'audio_file' in request.files and request.files['audio_file'].filename:
+            audio_file = request.files['audio_file']
+            with tempfile.NamedTemporaryFile(suffix=os.path.splitext(audio_file.filename)[1] or '.mp3', delete=False) as tmp_audio:
+                audio_file.save(tmp_audio.name)
+                audio_path = tmp_audio.name
+
+        render_result = render_video_from_plan(
+            input_video_path=input_path,
+            plan=edit_plan,
+            background_music_path=audio_path,
+        )
+
+        render_id = f"rend_{secrets.token_hex(8)}"
+        _rendered_video_store[render_id] = {
+            'path': render_result['output_path'],
+            'created_at': datetime.utcnow().isoformat(),
+            'meta': render_result,
+        }
+
+        return jsonify({
+            'render_id': render_id,
+            'download_url': f"/api/video-director/render/{render_id}",
+            'meta': render_result,
+        }), 200
+    except Exception as e:
+        print(f"[ERROR] Director render failed: {e}")
+        return jsonify({'error': str(e)}), 500
+
+
+@app.route('/api/video-director/render/<render_id>', methods=['GET'])
+def video_director_download_render(render_id: str):
+    """Download a previously rendered video."""
+    info = _rendered_video_store.get(render_id)
+    if not info:
+        return jsonify({'error': 'render_id not found'}), 404
+
+    path = info.get('path')
+    if not path or not os.path.exists(path):
+        return jsonify({'error': 'Rendered file no longer available'}), 404
+
+    return send_file(path, as_attachment=True, download_name=f'{render_id}.mp4', mimetype='video/mp4')
+
+
+@app.route('/api/video-director/session/<session_id>', methods=['GET'])
+def video_director_get_session(session_id: str):
+    """Inspect current session state (history, thought signature, previous interaction id)."""
+    try:
+        session = get_session(session_id)
+        return jsonify(session), 200
+    except ValueError as ve:
+        return jsonify({'error': str(ve)}), 404
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
 
 if __name__ == '__main__':
     port = int(os.getenv('PORT', 5000))
