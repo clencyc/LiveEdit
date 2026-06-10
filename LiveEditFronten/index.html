@@ -5,6 +5,17 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Live Edit</title>
+    <!-- Anti-flash: apply saved theme before render -->
+    <script>
+      (function() {
+        try {
+          var theme = localStorage.getItem('app-theme') || 'dark';
+          document.documentElement.setAttribute('data-theme', theme);
+        } catch(e) {
+          document.documentElement.setAttribute('data-theme', 'dark');
+        }
+      })();
+    </script>
     <!-- Microsoft Clarity - loaded asynchronously to avoid blocking -->
     <script type="text/javascript">
         // Defer Clarity loading until after page is interactive
