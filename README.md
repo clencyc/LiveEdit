@@ -316,6 +316,7 @@ npm install
 2. Make your changes
 3. Test locally (both frontend & backend)
 4. Submit PR with description
+5. See [TESTING.md](./TESTING.md) for the full testing guide.
 
 ## 📄 License
 
