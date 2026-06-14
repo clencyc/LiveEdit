@@ -313,6 +313,11 @@ npm install
 ## 🤝 Contributing
 
 We welcome contributions! Please see our [CONTRIBUTING.md](CONTRIBUTING.md) for details on how to get started, our code of conduct, and the process for submitting pull requests.
+1. Create a feature branch
+2. Make your changes
+3. Test locally (both frontend & backend)
+4. Submit PR with description
+5. See [TESTING.md](./TESTING.md) for the full testing guide.
 
 ## 📄 License
 
