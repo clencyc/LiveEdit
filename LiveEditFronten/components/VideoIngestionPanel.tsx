@@ -30,24 +30,24 @@ const VideoIngestionPanel: React.FC<VideoIngestionPanelProps> = ({ onInsertScene
     setProgress('Preparing upload…');
     setResult(null);
 
+    // Try to get video duration from a temporary element
+    let duration = 0;
     try {
-      // Try to get video duration from a temporary element
-      let duration = 0;
-      try {
-        const url = URL.createObjectURL(file);
-        const video = document.createElement('video');
-        video.preload = 'metadata';
-        await new Promise<void>((resolve) => {
-          video.onloadedmetadata = () => {
-            duration = video.duration;
-            URL.revokeObjectURL(url);
-            resolve();
-          };
-          video.onerror = () => resolve();
-          video.src = url;
-        });
-      } catch { /* ignore */ }
+      const url = URL.createObjectURL(file);
+      const video = document.createElement('video');
+      video.preload = 'metadata';
+      await new Promise<void>((resolve) => {
+        video.onloadedmetadata = () => {
+          duration = video.duration;
+          URL.revokeObjectURL(url);
+          resolve();
+        };
+        video.onerror = () => resolve();
+        video.src = url;
+      });
+    } catch { /* ignore */ }
 
+    try {
       const res = await uploadForIngestion(file, {
         duration,
         onProgress: setProgress,
@@ -57,7 +57,13 @@ const VideoIngestionPanel: React.FC<VideoIngestionPanelProps> = ({ onInsertScene
       setActiveTab('analysis');
       setProgress('');
     } catch (e: any) {
-      setError(e.message || 'Upload failed');
+      // Distinguish timeout-like errors for better UX
+      const msg = e.message || 'Upload failed';
+      if (msg.includes('timeout') || msg.includes('Timeout') || msg.includes('timed out')) {
+        setError(`The video analysis timed out. Try a smaller file or increase GEMINI_API_TIMEOUT in the backend .env file.`);
+      } else {
+        setError(msg);
+      }
     } finally {
       setIsUploading(false);
     }

@@ -25,10 +25,12 @@ VERTEX_LOCATION = os.getenv("VERTEX_LOCATION", "us-central1").strip() or "us-cen
 API_KEY = (os.getenv("GEMINI_API_KEY") or "").strip()
 TEXT_MODEL_NAME = os.getenv("GEMINI_TEXT_MODEL", "gemini-2.0-flash").strip() or "gemini-2.0-flash"
 VIDEO_MODEL_NAME = os.getenv("GEMINI_VIDEO_MODEL", "gemini-2.0-flash").strip() or "gemini-2.0-flash"
+GEMINI_API_TIMEOUT = int(os.getenv("GEMINI_API_TIMEOUT", "120"))
 
 
 @lru_cache(maxsize=1)
 def get_genai_client() -> genai.Client:
+    http_opts = {"timeout": GEMINI_API_TIMEOUT * 1000}
     if USE_VERTEX_AI:
         if not VERTEX_PROJECT_ID:
             raise ValueError(
@@ -40,11 +42,12 @@ def get_genai_client() -> genai.Client:
             vertexai=True,
             project=VERTEX_PROJECT_ID,
             location=VERTEX_LOCATION,
+            http_options=http_opts,
         )
 
     if not API_KEY:
         raise ValueError("GEMINI_API_KEY not found in .env file")
-    return genai.Client(api_key=API_KEY)
+    return genai.Client(api_key=API_KEY, http_options=http_opts)
 
 
 def using_vertex_ai() -> bool:
@@ -75,6 +78,7 @@ def describe_ai_backend() -> str:
 
 __all__ = [
     "API_KEY",
+    "GEMINI_API_TIMEOUT",
     "TEXT_MODEL_NAME",
     "VIDEO_MODEL_NAME",
     "describe_ai_backend",
