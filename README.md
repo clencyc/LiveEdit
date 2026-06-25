@@ -38,6 +38,7 @@ cd LiveEditBackend
 
 ```
 LiveEditProject/
+├── docs/                     # Documentation files
 ├── LiveEditBackend/          # Python Flask backend
 │   ├── app.py                # Main Flask application
 │   ├── main.ipynb            # Development notebook
@@ -64,8 +65,6 @@ LiveEditProject/
 │
 └── Configuration Files
     ├── setup.sh              # Automated setup script
-    ├── start-backend.sh      # Backend startup
-    ├── start-backend.sh      # Backend startup
     ├── start-backend.sh      # Backend startup
     ├── start-frontend.sh     # Frontend startup
     ├── start-celery.sh       # Celery worker startup
