@@ -1,5 +1,6 @@
 import os
 import ssl
+
 from celery import Celery
 from dotenv import load_dotenv
 
@@ -13,12 +14,8 @@ broker_use_ssl = None
 redis_backend_use_ssl = None
 
 if REDIS_URL.startswith("rediss://"):
-    broker_use_ssl = {
-        'ssl_cert_reqs': ssl.CERT_NONE
-    }
-    redis_backend_use_ssl = {
-        'ssl_cert_reqs': ssl.CERT_NONE
-    }
+    broker_use_ssl = {"ssl_cert_reqs": ssl.CERT_NONE}
+    redis_backend_use_ssl = {"ssl_cert_reqs": ssl.CERT_NONE}
 
 celery_app = Celery(
     "liveedit",
