@@ -23,6 +23,9 @@ TEXT_MODEL_NAME = get_text_model_name()
 DATABASE_URL = os.getenv("DATABASE_URL")
 JOB_WORKDIR = os.getenv("JOB_WORKDIR", "/tmp/liveedit_jobs")
 CACHE_TTL = int(os.getenv("CACHE_TTL", "604800"))
+ENABLE_ANALYSIS_CACHE = os.getenv("ENABLE_ANALYSIS_CACHE", "false").lower() == "true"
+print("CACHE ENABLED:", ENABLE_ANALYSIS_CACHE)
+print("CACHE TTL:", CACHE_TTL)
 
 
 def call_gemini_with_retry(
@@ -289,9 +292,14 @@ def analyze_video_task(
         print("REDIS CLIENT:", _redis_client)
         print("CACHE KEY:", cache_key)
 
-        cached = _redis_client.get(cache_key) if _redis_client is not None else None
+        cached = None
+        if ENABLE_ANALYSIS_CACHE and _redis_client is not None:
+            cached = _redis_client.get(cache_key)
+
         if isinstance(cached, (str, bytes, bytearray)):
             print("CACHE HIT")
+            if _redis_client is not None:
+                _redis_client.incr("liveedit:cache:hits")
             cached_value = json.loads(cached)
             analysis = cached_value["analysis"]
             update_job(
@@ -304,6 +312,8 @@ def analyze_video_task(
             return analysis
 
         print("CACHE MISS")
+        if ENABLE_ANALYSIS_CACHE and _redis_client is not None:
+            _redis_client.incr("liveedit:cache:misses")
 
         mime_type, _ = mimetypes.guess_type(video_path)
         if not mime_type:
@@ -320,13 +330,15 @@ def analyze_video_task(
 
         cache_value = {"timestamp": time.time(), "analysis": result}
 
-        if _redis_client is not None:
+        if ENABLE_ANALYSIS_CACHE and _redis_client is not None:
             _redis_client.setex(
                 cache_key,
                 CACHE_TTL,
                 json.dumps(cache_value),
             )
             print("CACHE STORED")
+        elif not ENABLE_ANALYSIS_CACHE:
+            print("CACHE DISABLED")
         else:
             print("NO REDIS CLIENT")
 
