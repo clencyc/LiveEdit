@@ -708,6 +708,7 @@ def analyze_video():
 
         video_file = request.files["video_file"]
         user_prompt = request.form.get("prompt", "Analyze this video")
+        skip_cache = request.args.get("skip_cache", "false").lower() == "true"
 
         if video_file.filename == "":
             return jsonify({"error": "No selected file"}), 400
@@ -732,7 +733,7 @@ def analyze_video():
         cur.close()
         conn.close()
 
-        analyze_video_task.delay(job_id, video_path, user_prompt)
+        analyze_video_task.delay(job_id, video_path, user_prompt, skip_cache)
 
         return jsonify(
             {
@@ -740,6 +741,7 @@ def analyze_video():
                 "status": "queued",
                 "job_type": "analyze",
                 "message": "Video analysis queued",
+                "skip_cache": skip_cache,
             }
         ), 202
 

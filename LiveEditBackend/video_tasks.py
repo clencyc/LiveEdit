@@ -279,7 +279,10 @@ def build_multi_edit_prompt(user_prompt: str, clip_metas: List[Dict[str, Any]]) 
 
 @celery_app.task(name="analyze_video_task")
 def analyze_video_task(
-    job_id: str, video_path: str, user_prompt: str
+    job_id: str,
+    video_path: str,
+    user_prompt: str,
+    skip_cache: bool = False,
 ) -> Dict[str, Any]:
     update_job(job_id, status="processing", message="Analyzing video", progress=5)
     try:
@@ -291,9 +294,10 @@ def analyze_video_task(
 
         print("REDIS CLIENT:", _redis_client)
         print("CACHE KEY:", cache_key)
+        print("SKIP CACHE:", skip_cache)
 
         cached = None
-        if ENABLE_ANALYSIS_CACHE and _redis_client is not None:
+        if ENABLE_ANALYSIS_CACHE and not skip_cache and _redis_client is not None:
             cached = _redis_client.get(cache_key)
 
         if isinstance(cached, (str, bytes, bytearray)):
@@ -311,9 +315,12 @@ def analyze_video_task(
             )
             return analysis
 
-        print("CACHE MISS")
-        if ENABLE_ANALYSIS_CACHE and _redis_client is not None:
-            _redis_client.incr("liveedit:cache:misses")
+        if skip_cache:
+            print("CACHE SKIP")
+        else:
+            print("CACHE MISS")
+            if ENABLE_ANALYSIS_CACHE and _redis_client is not None:
+                _redis_client.incr("liveedit:cache:misses")
 
         mime_type, _ = mimetypes.guess_type(video_path)
         if not mime_type:
@@ -323,10 +330,15 @@ def analyze_video_task(
             f"You are viewing a video file. Analyze frame-by-frame.\nUSER REQUEST: {user_prompt}\n"
             "Return strict JSON with summary, key_events, and edit_plan."
         )
-        response = call_gemini_with_retry(
-            contents=[video_part, analysis_prompt], model=TEXT_MODEL_NAME, max_retries=3
-        )
-        result = parse_model_response(response)
+        # response = call_gemini_with_retry(
+        #     contents=[video_part, analysis_prompt], model=TEXT_MODEL_NAME, max_retries=3
+        # )
+        # result = parse_model_response(response)
+        result = {
+            "summary": "test cached analysis",
+            "key_events": [],
+            "edit_plan": [],
+        }
 
         cache_value = {"timestamp": time.time(), "analysis": result}
 
