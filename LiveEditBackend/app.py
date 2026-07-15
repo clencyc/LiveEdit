@@ -22,6 +22,7 @@ from flask import Flask, jsonify, request, send_file
 from flask_cors import CORS
 from psycopg2.extras import RealDictCursor
 from video_director import (
+    _redis_client,
     generate_structured_edit_plan,
     get_session,
     render_video_from_plan,
@@ -36,7 +37,13 @@ from video_ingestion import (
     query_cached_video,
     upload_bytes_to_gemini_files,
 )
-from video_tasks import analyze_video_task, edit_multi_task, edit_video_task
+from video_tasks import (
+    CACHE_TTL,
+    ENABLE_ANALYSIS_CACHE,
+    analyze_video_task,
+    edit_multi_task,
+    edit_video_task,
+)
 from werkzeug.utils import secure_filename
 
 load_dotenv()
@@ -408,9 +415,16 @@ def init_video_job_table():
                 message TEXT,
                 result_path TEXT,
                 result_json JSONB,
+                cache_status VARCHAR(16),
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                 updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             )
+            """
+        )
+        cur.execute(
+            """
+            ALTER TABLE video_jobs
+            ADD COLUMN IF NOT EXISTS cache_status VARCHAR(16)
             """
         )
         cur.execute(
@@ -948,6 +962,90 @@ def time_to_seconds(time_str):
 # Paystack payment endpoints
 
 
+@app.route("/api/cache/stats", methods=["GET"])
+def get_cache_stats():
+    """Return analysis-cache hit/miss counters from Redis (read-only)."""
+    if _redis_client is None:
+        return jsonify(
+            {
+                "hits": 0,
+                "misses": 0,
+                "total_requests": 0,
+                "hit_ratio": 0.0,
+                "cache_enabled": ENABLE_ANALYSIS_CACHE,
+                "cache_ttl": CACHE_TTL,
+                "redis_connected": False,
+            }
+        ), 200
+
+    try:
+        hits = int(_redis_client.get("liveedit:cache:hits") or 0)
+        misses = int(_redis_client.get("liveedit:cache:misses") or 0)
+    except Exception as e:
+        print(f"Error reading cache stats: {e}")
+        return jsonify(
+            {
+                "hits": 0,
+                "misses": 0,
+                "total_requests": 0,
+                "hit_ratio": 0.0,
+                "cache_enabled": ENABLE_ANALYSIS_CACHE,
+                "cache_ttl": CACHE_TTL,
+                "redis_connected": False,
+            }
+        ), 200
+
+    total_requests = hits + misses
+    hit_ratio = 0.0 if total_requests == 0 else (hits / total_requests) * 100
+
+    return jsonify(
+        {
+            "hits": hits,
+            "misses": misses,
+            "total_requests": total_requests,
+            "hit_ratio": hit_ratio,
+            "cache_enabled": ENABLE_ANALYSIS_CACHE,
+            "cache_ttl": CACHE_TTL,
+            "redis_connected": True,
+        }
+    ), 200
+
+
+@app.route("/api/cache/clear", methods=["POST"])
+def clear_cache():
+    """Delete analysis cache keys and reset hit/miss counters."""
+    if _redis_client is None:
+        return jsonify(
+            {
+                "success": False,
+                "message": "Redis is not connected",
+            }
+        ), 200
+
+    try:
+        deleted_keys = 0
+        for key in _redis_client.scan_iter(match="liveedit:analysis:*", count=100):
+            deleted_keys += int(_redis_client.delete(key) or 0)
+
+        _redis_client.delete("liveedit:cache:hits", "liveedit:cache:misses")
+
+        return jsonify(
+            {
+                "success": True,
+                "deleted_keys": deleted_keys,
+                "metrics_reset": True,
+            }
+        ), 200
+    except Exception as e:
+        print(f"Error clearing analysis cache: {e}")
+        return jsonify(
+            {
+                "success": False,
+                "message": "Failed to clear analysis cache",
+            }
+        ), 500
+
+
 @app.route("/api/video-jobs/<job_id>", methods=["GET"])
 def get_video_job(job_id):
     """Check the status of a queued video job"""
@@ -956,7 +1054,8 @@ def get_video_job(job_id):
         cur = conn.cursor()
         cur.execute(
             """
-            SELECT job_id, job_type, status, progress, message, result_path, result_json, created_at, updated_at
+            SELECT job_id, job_type, status, progress, message, result_path, result_json,
+                   cache_status, created_at, updated_at
             FROM video_jobs
             WHERE job_id = %s
             """,
@@ -976,7 +1075,11 @@ def get_video_job(job_id):
             except json.JSONDecodeError:
                 pass
 
-        return jsonify(job_dict), 200
+        response = jsonify(job_dict)
+        cache_status = job_dict.get("cache_status")
+        if cache_status:
+            response.headers["X-Cache"] = cache_status
+        return response, 200
 
     except Exception as e:
         print(f"Error fetching job status: {str(e)}")

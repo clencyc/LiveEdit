@@ -296,12 +296,15 @@ def analyze_video_task(
         print("CACHE KEY:", cache_key)
         print("SKIP CACHE:", skip_cache)
 
+        # HIT | MISS | BYPASS — persisted for GET /api/video-jobs X-Cache header
+        cache_status = "BYPASS"
         cached = None
         if ENABLE_ANALYSIS_CACHE and not skip_cache and _redis_client is not None:
             cached = _redis_client.get(cache_key)
 
         if isinstance(cached, (str, bytes, bytearray)):
             print("CACHE HIT")
+            cache_status = "HIT"
             if _redis_client is not None:
                 _redis_client.incr("liveedit:cache:hits")
             cached_value = json.loads(cached)
@@ -311,16 +314,18 @@ def analyze_video_task(
                 status="succeeded",
                 progress=100,
                 result_json=json.dumps(analysis),
+                cache_status=cache_status,
                 message="Analysis complete (cache hit)",
             )
             return analysis
 
-        if skip_cache:
-            print("CACHE SKIP")
+        if skip_cache or not ENABLE_ANALYSIS_CACHE or _redis_client is None:
+            print("CACHE BYPASS" if not skip_cache else "CACHE SKIP")
+            cache_status = "BYPASS"
         else:
             print("CACHE MISS")
-            if ENABLE_ANALYSIS_CACHE and _redis_client is not None:
-                _redis_client.incr("liveedit:cache:misses")
+            cache_status = "MISS"
+            _redis_client.incr("liveedit:cache:misses")
 
         mime_type, _ = mimetypes.guess_type(video_path)
         if not mime_type:
@@ -359,6 +364,7 @@ def analyze_video_task(
             status="succeeded",
             progress=100,
             result_json=json.dumps(result),
+            cache_status=cache_status,
             message="Analysis complete",
         )
         return result
