@@ -1,18 +1,13 @@
-from flask import Flask, request, jsonify, send_file
-from flask_cors import CORS
+import hashlib
+import hmac
 import json
 import os
+import secrets
 import subprocess
 import tempfile
 from datetime import datetime
-from dotenv import load_dotenv
-import psycopg2
-from psycopg2.extras import RealDictCursor
-import hashlib
-import hmac
-import secrets
-from werkzeug.utils import secure_filename
 
+import psycopg2
 from ai_client import (
     API_KEY,
     describe_ai_backend,
@@ -22,29 +17,41 @@ from ai_client import (
     get_video_model_name,
     using_vertex_ai,
 )
-from video_tasks import analyze_video_task, edit_video_task, edit_multi_task
+from dotenv import load_dotenv
+from flask import Flask, jsonify, request, send_file
+from flask_cors import CORS
+from psycopg2.extras import RealDictCursor
+from video_director import (
+    _redis_client,
+    generate_structured_edit_plan,
+    get_session,
+    render_video_from_plan,
+    run_interaction_turn,
+    start_interaction_session,
+)
 from video_ingestion import (
+    analyze_video_with_gemini,
+    extract_video_intelligence_metadata,
     full_video_ingestion,
+    get_scene_summary,
     query_cached_video,
     upload_bytes_to_gemini_files,
-    analyze_video_with_gemini,
-    get_scene_summary,
-    extract_video_intelligence_metadata,
 )
-from video_director import (
-    start_interaction_session,
-    run_interaction_turn,
-    generate_structured_edit_plan,
-    render_video_from_plan,
-    get_session,
+from video_tasks import (
+    CACHE_TTL,
+    ENABLE_ANALYSIS_CACHE,
+    analyze_video_task,
+    edit_multi_task,
+    edit_video_task,
 )
+from werkzeug.utils import secure_filename
 
 load_dotenv()
 
 app = Flask(__name__)
 
 # Get frontend URL from environment (for production deployments)
-FRONTEND_URL = os.getenv('FRONTEND_URL', '')
+FRONTEND_URL = os.getenv("FRONTEND_URL", "")
 ALLOWED_ORIGINS = [
     "http://localhost:3000",
     "http://localhost:5173",
@@ -59,26 +66,34 @@ if FRONTEND_URL:
     ALLOWED_ORIGINS.append(FRONTEND_URL)
 
 # Configure CORS with proper settings for cookies and credentials
-CORS(app, 
-     resources={r"/api/*": {
-         "origins": ALLOWED_ORIGINS,
-         "methods": ["GET", "POST", "PUT", "DELETE", "OPTIONS"],
-         "allow_headers": ["Content-Type", "Authorization"],
-         "supports_credentials": True,
-         "max_age": 3600
-     }})
+CORS(
+    app,
+    resources={
+        r"/api/*": {
+            "origins": ALLOWED_ORIGINS,
+            "methods": ["GET", "POST", "PUT", "DELETE", "OPTIONS"],
+            "allow_headers": ["Content-Type", "Authorization"],
+            "supports_credentials": True,
+            "max_age": 3600,
+        }
+    },
+)
+
 
 # Additional CORS headers for all responses
 @app.after_request
 def after_request(response):
-    origin = request.headers.get('Origin')
-    if origin in ALLOWED_ORIGINS or (origin and origin.endswith('.vercel.app')):
-        response.headers['Access-Control-Allow-Origin'] = origin
-        response.headers['Access-Control-Allow-Credentials'] = 'true'
-        response.headers['Access-Control-Allow-Methods'] = 'GET, POST, PUT, DELETE, OPTIONS'
-        response.headers['Access-Control-Allow-Headers'] = 'Content-Type, Authorization'
-        response.headers['Access-Control-Max-Age'] = '3600'
+    origin = request.headers.get("Origin")
+    if origin in ALLOWED_ORIGINS or (origin and origin.endswith(".vercel.app")):
+        response.headers["Access-Control-Allow-Origin"] = origin
+        response.headers["Access-Control-Allow-Credentials"] = "true"
+        response.headers["Access-Control-Allow-Methods"] = (
+            "GET, POST, PUT, DELETE, OPTIONS"
+        )
+        response.headers["Access-Control-Allow-Headers"] = "Content-Type, Authorization"
+        response.headers["Access-Control-Max-Age"] = "3600"
     return response
+
 
 # Configure Gemini API
 TEXT_MODEL_NAME = get_text_model_name()
@@ -87,42 +102,56 @@ ai_client = get_genai_client()
 print(f"[AI] Using backend: {describe_ai_backend()}")
 
 # Image generation model
-IMAGE_MODEL_ID = os.getenv('GEMINI_IMAGE_MODEL', 'imagen-3.0-generate-001')
+IMAGE_MODEL_ID = os.getenv("GEMINI_IMAGE_MODEL", "imagen-3.0-generate-001")
+
 
 # Helper to get AI client for image generation
 def getAiClient():
     if not API_KEY and using_vertex_ai():
         raise ValueError("Image generation route still requires GEMINI_API_KEY.")
     from google.genai import Client
+
     return Client(api_key=API_KEY)
 
+
 # Database connections
-DATABASE_URL = os.getenv('DATABASE_URL')
+DATABASE_URL = os.getenv("DATABASE_URL")
 if not DATABASE_URL:
     raise ValueError("DATABASE_URL not found in .env file")
 
 # Where uploaded assets for jobs are stored (shared between API and Celery workers)
-JOB_WORKDIR = os.getenv('JOB_WORKDIR', '/tmp/liveedit_jobs')
+JOB_WORKDIR = os.getenv("JOB_WORKDIR", "/tmp/liveedit_jobs")
 os.makedirs(JOB_WORKDIR, exist_ok=True)
+
 
 def get_db_connection():
     """Create a new database connection"""
     return psycopg2.connect(DATABASE_URL, cursor_factory=RealDictCursor)
 
-def save_video_to_db(job_id: str, file_index: int, filename: str, file_data: bytes, content_type: str = 'video/mp4') -> int:
+
+def save_video_to_db(
+    job_id: str,
+    file_index: int,
+    filename: str,
+    file_data: bytes,
+    content_type: str = "video/mp4",
+) -> int:
     """Save video blob to database"""
     try:
         conn = get_db_connection()
         cur = conn.cursor()
-        cur.execute("""
+        cur.execute(
+            """
             INSERT INTO video_files (job_id, file_index, filename, content_type, file_data, file_size)
             VALUES (%s, %s, %s, %s, %s, %s)
             ON CONFLICT (job_id, file_index) DO UPDATE
             SET file_data = EXCLUDED.file_data,
                 file_size = EXCLUDED.file_size
             RETURNING id;
-        """, (job_id, file_index, filename, content_type, file_data, len(file_data)))
-        video_id = cur.fetchone()['id']
+        """,
+            (job_id, file_index, filename, content_type, file_data, len(file_data)),
+        )
+        video_id = cur.fetchone()["id"]
         conn.commit()
         cur.close()
         conn.close()
@@ -131,20 +160,26 @@ def save_video_to_db(job_id: str, file_index: int, filename: str, file_data: byt
         print(f"[ERROR] Failed to save video to database: {str(e)}")
         raise
 
-def save_audio_to_db(job_id: str, filename: str, file_data: bytes, content_type: str = 'audio/mpeg') -> int:
+
+def save_audio_to_db(
+    job_id: str, filename: str, file_data: bytes, content_type: str = "audio/mpeg"
+) -> int:
     """Save audio blob to database"""
     try:
         conn = get_db_connection()
         cur = conn.cursor()
-        cur.execute("""
+        cur.execute(
+            """
             INSERT INTO audio_files (job_id, filename, content_type, file_data, file_size)
             VALUES (%s, %s, %s, %s, %s)
             ON CONFLICT (job_id) DO UPDATE
             SET file_data = EXCLUDED.file_data,
                 file_size = EXCLUDED.file_size
             RETURNING id;
-        """, (job_id, filename, content_type, file_data, len(file_data)))
-        audio_id = cur.fetchone()['id']
+        """,
+            (job_id, filename, content_type, file_data, len(file_data)),
+        )
+        audio_id = cur.fetchone()["id"]
         conn.commit()
         cur.close()
         conn.close()
@@ -153,88 +188,105 @@ def save_audio_to_db(job_id: str, filename: str, file_data: bytes, content_type:
         print(f"[ERROR] Failed to save audio to database: {str(e)}")
         raise
 
+
 def get_audio_for_job(job_id: str) -> tuple:
     """Retrieve audio blob for a job. Returns (filename, file_data) or (None, None)"""
     try:
         conn = get_db_connection()
         cur = conn.cursor()
-        cur.execute("""
+        cur.execute(
+            """
             SELECT filename, file_data
             FROM audio_files
             WHERE job_id = %s
             LIMIT 1
-        """, (job_id,))
+        """,
+            (job_id,),
+        )
         row = cur.fetchone()
         cur.close()
         conn.close()
-        
+
         if not row:
             return None, None
-        
-        return row['filename'], row['file_data']
+
+        return row["filename"], row["file_data"]
     except Exception as e:
         print(f"[ERROR] Failed to retrieve audio from database: {str(e)}")
         return None, None
+
 
 def get_video_from_db(job_id: str, file_index: int) -> tuple:
     """Retrieve video blob from database. Returns (filename, file_data)"""
     try:
         conn = get_db_connection()
         cur = conn.cursor()
-        cur.execute("""
+        cur.execute(
+            """
             SELECT filename, file_data
             FROM video_files
             WHERE job_id = %s AND file_index = %s
-        """, (job_id, file_index))
+        """,
+            (job_id, file_index),
+        )
         row = cur.fetchone()
         cur.close()
         conn.close()
-        
+
         if not row:
-            raise FileNotFoundError(f"Video not found in database: job={job_id}, index={file_index}")
-        
-        return row['filename'], row['file_data']
+            raise FileNotFoundError(
+                f"Video not found in database: job={job_id}, index={file_index}"
+            )
+
+        return row["filename"], row["file_data"]
     except Exception as e:
         print(f"[ERROR] Failed to retrieve video from database: {str(e)}")
         raise
+
 
 def get_all_videos_for_job(job_id: str) -> list:
     """Get all video files for a job. Returns list of (file_index, filename, file_data)"""
     try:
         conn = get_db_connection()
         cur = conn.cursor()
-        cur.execute("""
+        cur.execute(
+            """
             SELECT file_index, filename, file_data
             FROM video_files
             WHERE job_id = %s
             ORDER BY file_index ASC
-        """, (job_id,))
+        """,
+            (job_id,),
+        )
         rows = cur.fetchall()
         cur.close()
         conn.close()
-        
-        return [(row['file_index'], row['filename'], row['file_data']) for row in rows]
+
+        return [(row["file_index"], row["filename"], row["file_data"]) for row in rows]
     except Exception as e:
         print(f"[ERROR] Failed to retrieve videos from database: {str(e)}")
         return []
+
 
 def extract_videos_to_workspace(job_id: str) -> list:
     """Extract all videos for a job from database to workspace. Returns list of file paths"""
     try:
         job_dir = os.path.join(JOB_WORKDIR, job_id)
         os.makedirs(job_dir, exist_ok=True)
-        
+
         videos = get_all_videos_for_job(job_id)
         paths = []
-        
+
         for file_index, filename, file_data in videos:
             # Standardize filename as videoN.mp4
             video_path = os.path.join(job_dir, f"video{file_index}.mp4")
-            with open(video_path, 'wb') as f:
+            with open(video_path, "wb") as f:
                 f.write(file_data)
             paths.append(video_path)
-            print(f"[DEBUG] Extracted video {file_index} from DB: {video_path} ({len(file_data)} bytes)")
-        
+            print(
+                f"[DEBUG] Extracted video {file_index} from DB: {video_path} ({len(file_data)} bytes)"
+            )
+
         return paths
     except Exception as e:
         print(f"[ERROR] Failed to extract videos from database: {str(e)}")
@@ -242,20 +294,25 @@ def extract_videos_to_workspace(job_id: str) -> list:
 
     return psycopg2.connect(DATABASE_URL, cursor_factory=RealDictCursor)
 
+
 def hash_password(password: str) -> str:
     """Hash a password using PBKDF2"""
     salt = secrets.token_hex(16)
-    key = hashlib.pbkdf2_hmac('sha256', password.encode(), salt.encode(), 100000)
+    key = hashlib.pbkdf2_hmac("sha256", password.encode(), salt.encode(), 100000)
     return f"{salt}${key.hex()}"
+
 
 def verify_password(password: str, hash_val: str) -> bool:
     """Verify a password against its hash"""
     try:
-        salt, key = hash_val.split('$')
-        new_key = hashlib.pbkdf2_hmac('sha256', password.encode(), salt.encode(), 100000)
+        salt, key = hash_val.split("$")
+        new_key = hashlib.pbkdf2_hmac(
+            "sha256", password.encode(), salt.encode(), 100000
+        )
         return hmac.compare_digest(new_key.hex(), key)
     except:
         return False
+
 
 def init_auth_table():
     """Create users table if it doesn't exist"""
@@ -276,21 +333,28 @@ def init_auth_table():
         """)
 
         # Ensure subscription columns exist for legacy tables
-        cur.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS subscription_status VARCHAR(50) DEFAULT 'free'")
-        cur.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS subscription_plan VARCHAR(50)")
-        cur.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS subscription_end_date TIMESTAMP")
+        cur.execute(
+            "ALTER TABLE users ADD COLUMN IF NOT EXISTS subscription_status VARCHAR(50) DEFAULT 'free'"
+        )
+        cur.execute(
+            "ALTER TABLE users ADD COLUMN IF NOT EXISTS subscription_plan VARCHAR(50)"
+        )
+        cur.execute(
+            "ALTER TABLE users ADD COLUMN IF NOT EXISTS subscription_end_date TIMESTAMP"
+        )
         conn.commit()
         cur.close()
         conn.close()
     except Exception as e:
         print(f"Warning: Could not initialize auth table: {str(e)}")
 
+
 def init_payment_tables():
     """Create payment and subscription tables"""
     try:
         conn = get_db_connection()
         cur = conn.cursor()
-        
+
         # Create subscription plans table
         cur.execute("""
             CREATE TABLE IF NOT EXISTS subscription_plans (
@@ -304,7 +368,7 @@ def init_payment_tables():
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             )
         """)
-        
+
         # Create transactions table
         cur.execute("""
             CREATE TABLE IF NOT EXISTS transactions (
@@ -320,20 +384,21 @@ def init_payment_tables():
                 updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             )
         """)
-        
+
         # Insert default subscription plan
         cur.execute("""
             INSERT INTO subscription_plans (name, price, currency, duration_days, features)
-            VALUES 
+            VALUES
                 ('Basic', 100.00, 'KES', 30, '{"ai_generations": 100, "storage_gb": 10, "video_exports": "1080p", "priority_support": true}')
             ON CONFLICT (name) DO NOTHING
         """)
-        
+
         conn.commit()
         cur.close()
         conn.close()
     except Exception as e:
         print(f"Warning: Could not initialize payment tables: {str(e)}")
+
 
 def init_video_job_table():
     """Create table to track async video jobs"""
@@ -350,9 +415,16 @@ def init_video_job_table():
                 message TEXT,
                 result_path TEXT,
                 result_json JSONB,
+                cache_status VARCHAR(16),
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                 updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             )
+            """
+        )
+        cur.execute(
+            """
+            ALTER TABLE video_jobs
+            ADD COLUMN IF NOT EXISTS cache_status VARCHAR(16)
             """
         )
         cur.execute(
@@ -366,6 +438,7 @@ def init_video_job_table():
         conn.close()
     except Exception as e:
         print(f"Warning: Could not initialize video_jobs table: {str(e)}")
+
 
 def init_media_tables():
     """Create tables to store video/audio blobs for jobs"""
@@ -411,35 +484,39 @@ def init_media_tables():
     except Exception as e:
         print(f"Warning: Could not initialize media tables: {str(e)}")
 
+
 # Initialize auth table on startup
 init_auth_table()
 init_payment_tables()
 init_video_job_table()
 init_media_tables()
 
-@app.route('/health', methods=['GET'])
+
+@app.route("/health", methods=["GET"])
 def health_check():
     """Health check endpoint"""
-    return jsonify({'status': 'ok', 'message': 'Backend is running'})
+    return jsonify({"status": "ok", "message": "Backend is running"})
 
-@app.route('/api/auth/signup', methods=['POST'])
+
+@app.route("/api/auth/signup", methods=["POST"])
 def signup():
     """Create a new user account"""
     try:
         data = request.get_json()
-        email = data.get('email', '').strip().lower()
-        password = data.get('password', '')
+        email = data.get("email", "").strip().lower()
+        password = data.get("password", "")
 
         if not email or not password:
-            return jsonify({'error': 'Email and password are required'}), 400
+            return jsonify({"error": "Email and password are required"}), 400
 
         if len(password) < 6:
-            return jsonify({'error': 'Password must be at least 6 characters'}), 400
+            return jsonify({"error": "Password must be at least 6 characters"}), 400
 
         # Check if email is valid
         import re
-        if not re.match(r'^[^\s@]+@[^\s@]+\.[^\s@]+$', email):
-            return jsonify({'error': 'Invalid email format'}), 400
+
+        if not re.match(r"^[^\s@]+@[^\s@]+\.[^\s@]+$", email):
+            return jsonify({"error": "Invalid email format"}), 400
 
         try:
             conn = get_db_connection()
@@ -450,39 +527,40 @@ def signup():
             if cur.fetchone():
                 cur.close()
                 conn.close()
-                return jsonify({'error': 'Email already registered'}), 409
+                return jsonify({"error": "Email already registered"}), 409
 
             # Hash password and create user
             password_hash = hash_password(password)
             cur.execute(
                 "INSERT INTO users (email, password_hash) VALUES (%s, %s)",
-                (email, password_hash)
+                (email, password_hash),
             )
             conn.commit()
 
             # Generate token (in production, use JWT)
             token = secrets.token_urlsafe(32)
-            
+
             cur.close()
             conn.close()
 
-            return jsonify({'success': True, 'token': token, 'email': email}), 201
+            return jsonify({"success": True, "token": token, "email": email}), 201
         except psycopg2.IntegrityError:
-            return jsonify({'error': 'Email already registered'}), 409
+            return jsonify({"error": "Email already registered"}), 409
     except Exception as e:
         print(f"Signup error: {str(e)}")
-        return jsonify({'error': 'Signup failed'}), 500
+        return jsonify({"error": "Signup failed"}), 500
 
-@app.route('/api/auth/login', methods=['POST'])
+
+@app.route("/api/auth/login", methods=["POST"])
 def login():
     """Authenticate a user"""
     try:
         data = request.get_json()
-        email = data.get('email', '').strip().lower()
-        password = data.get('password', '')
+        email = data.get("email", "").strip().lower()
+        password = data.get("password", "")
 
         if not email or not password:
-            return jsonify({'error': 'Email and password are required'}), 400
+            return jsonify({"error": "Email and password are required"}), 400
 
         conn = get_db_connection()
         cur = conn.cursor()
@@ -491,15 +569,15 @@ def login():
         cur.execute("SELECT id, password_hash FROM users WHERE email = %s", (email,))
         user = cur.fetchone()
 
-        if not user or not verify_password(password, user['password_hash']):
+        if not user or not verify_password(password, user["password_hash"]):
             cur.close()
             conn.close()
-            return jsonify({'error': 'Invalid email or password'}), 401
+            return jsonify({"error": "Invalid email or password"}), 401
 
         # Update last login
         cur.execute(
             "UPDATE users SET last_login = CURRENT_TIMESTAMP WHERE id = %s",
-            (user['id'],)
+            (user["id"],),
         )
         conn.commit()
 
@@ -509,17 +587,19 @@ def login():
         cur.close()
         conn.close()
 
-        return jsonify({'success': True, 'token': token, 'email': email}), 200
+        return jsonify({"success": True, "token": token, "email": email}), 200
     except Exception as e:
         print(f"Login error: {str(e)}")
-        return jsonify({'error': 'Login failed'}), 500
+        return jsonify({"error": "Login failed"}), 500
 
-@app.route('/api/auth/logout', methods=['POST'])
+
+@app.route("/api/auth/logout", methods=["POST"])
 def logout():
     """Logout endpoint (token cleanup handled on client)"""
-    return jsonify({'success': True, 'message': 'Logged out successfully'}), 200
+    return jsonify({"success": True, "message": "Logged out successfully"}), 200
 
-@app.route('/api/audio-effects', methods=['GET'])
+
+@app.route("/api/audio-effects", methods=["GET"])
 def list_audio_effects():
     """Get all available audio effects from database"""
     try:
@@ -536,58 +616,63 @@ def list_audio_effects():
         return jsonify([dict(effect) for effect in effects])
     except Exception as e:
         print(f"Error fetching audio effects: {str(e)}")
-        return jsonify({'error': str(e)}), 500
+        return jsonify({"error": str(e)}), 500
 
-@app.route('/api/audio-effects/<filename>', methods=['GET'])
+
+@app.route("/api/audio-effects/<filename>", methods=["GET"])
 def get_audio_file(filename):
     """Serve an audio file from the sounds directory"""
     try:
-        sounds_dir = os.path.join(os.path.dirname(__file__), 'sounds')
+        sounds_dir = os.path.join(os.path.dirname(__file__), "sounds")
         file_path = os.path.join(sounds_dir, filename)
         if not os.path.exists(file_path):
-            return jsonify({'error': 'Audio file not found'}), 404
-        return send_file(file_path, mimetype='audio/mpeg')
+            return jsonify({"error": "Audio file not found"}), 404
+        return send_file(file_path, mimetype="audio/mpeg")
     except Exception as e:
         print(f"Error serving audio file: {str(e)}")
-        return jsonify({'error': str(e)}), 500
+        return jsonify({"error": str(e)}), 500
 
-@app.route('/api/audio-effects/import', methods=['POST'])
+
+@app.route("/api/audio-effects/import", methods=["POST"])
 def import_audio_from_url():
     """Download audio from URL and add to library"""
     import requests
+
     try:
         data = request.get_json()
-        url = data.get('url')
-        name = data.get('name')
-        category = data.get('category', 'effect')
-        description = data.get('description', '')
-        tags = data.get('tags', [])
-        
+        url = data.get("url")
+        name = data.get("name")
+        category = data.get("category", "effect")
+        description = data.get("description", "")
+        tags = data.get("tags", [])
+
         if not url or not name:
-            return jsonify({'error': 'URL and name are required'}), 400
-        
+            return jsonify({"error": "URL and name are required"}), 400
+
         # Download the file
         response = requests.get(url, timeout=30)
         response.raise_for_status()
-        
+
         # Generate filename from name
         import re
-        filename = re.sub(r'[^\w\s-]', '', name.lower())
-        filename = re.sub(r'[-\s]+', '_', filename)
+
+        filename = re.sub(r"[^\w\s-]", "", name.lower())
+        filename = re.sub(r"[-\s]+", "_", filename)
         filename = f"{filename}.mp3"
-        
+
         # Save to sounds directory
-        sounds_dir = os.path.join(os.path.dirname(__file__), 'sounds')
+        sounds_dir = os.path.join(os.path.dirname(__file__), "sounds")
         os.makedirs(sounds_dir, exist_ok=True)
         file_path = os.path.join(sounds_dir, filename)
-        
-        with open(file_path, 'wb') as f:
+
+        with open(file_path, "wb") as f:
             f.write(response.content)
-        
+
         # Add to database
         conn = get_db_connection()
         cur = conn.cursor()
-        cur.execute("""
+        cur.execute(
+            """
             INSERT INTO audio_effects (name, filename, category, description, tags)
             VALUES (%s, %s, %s, %s, %s)
             ON CONFLICT (filename) DO UPDATE
@@ -596,49 +681,56 @@ def import_audio_from_url():
                 description = EXCLUDED.description,
                 tags = EXCLUDED.tags
             RETURNING id;
-        """, (name, filename, category, description, tags))
-        effect_id = cur.fetchone()['id']
+        """,
+            (name, filename, category, description, tags),
+        )
+        effect_id = cur.fetchone()["id"]
         conn.commit()
         cur.close()
         conn.close()
-        
-        return jsonify({
-            'success': True,
-            'id': effect_id,
-            'filename': filename,
-            'message': f'Audio effect "{name}" imported successfully'
-        })
+
+        return jsonify(
+            {
+                "success": True,
+                "id": effect_id,
+                "filename": filename,
+                "message": f'Audio effect "{name}" imported successfully',
+            }
+        )
     except requests.exceptions.RequestException as e:
-        return jsonify({'error': f'Failed to download audio: {str(e)}'}), 500
+        return jsonify({"error": f"Failed to download audio: {str(e)}"}), 500
     except Exception as e:
         print(f"Error importing audio: {str(e)}")
         import traceback
-        traceback.print_exc()
-        return jsonify({'error': str(e)}), 500
 
-@app.route('/api/analyze-video', methods=['POST'])
+        traceback.print_exc()
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route("/api/analyze-video", methods=["POST"])
 def analyze_video():
     """
     Analyze a video file and generate edit suggestions
-    
+
     Expected form data:
     - video_file: The video file to analyze
     - prompt: User's prompt for analysis
     """
     try:
-        if 'video_file' not in request.files:
-            return jsonify({'error': 'No video file provided'}), 400
+        if "video_file" not in request.files:
+            return jsonify({"error": "No video file provided"}), 400
 
-        video_file = request.files['video_file']
-        user_prompt = request.form.get('prompt', 'Analyze this video')
+        video_file = request.files["video_file"]
+        user_prompt = request.form.get("prompt", "Analyze this video")
+        skip_cache = request.args.get("skip_cache", "false").lower() == "true"
 
-        if video_file.filename == '':
-            return jsonify({'error': 'No selected file'}), 400
+        if video_file.filename == "":
+            return jsonify({"error": "No selected file"}), 400
 
         job_id = secrets.token_hex(16)
         job_dir = os.path.join(JOB_WORKDIR, job_id)
         os.makedirs(job_dir, exist_ok=True)
-        filename = secure_filename(video_file.filename) or 'video.mp4'
+        filename = secure_filename(video_file.filename) or "video.mp4"
         video_path = os.path.join(job_dir, filename)
         video_file.save(video_path)
 
@@ -649,82 +741,100 @@ def analyze_video():
             INSERT INTO video_jobs (job_id, job_type, status, progress, message)
             VALUES (%s, %s, %s, %s, %s)
             """,
-            (job_id, 'analyze', 'queued', 0, 'Queued for analysis')
+            (job_id, "analyze", "queued", 0, "Queued for analysis"),
         )
         conn.commit()
         cur.close()
         conn.close()
 
-        analyze_video_task.delay(job_id, video_path, user_prompt)
+        analyze_video_task.delay(job_id, video_path, user_prompt, skip_cache)
 
-        return jsonify({
-            'job_id': job_id,
-            'status': 'queued',
-            'job_type': 'analyze',
-            'message': 'Video analysis queued'
-        }), 202
+        return jsonify(
+            {
+                "job_id": job_id,
+                "status": "queued",
+                "job_type": "analyze",
+                "message": "Video analysis queued",
+                "skip_cache": skip_cache,
+            }
+        ), 202
 
     except Exception as e:
         print(f"Error queuing video analysis: {str(e)}")
         import traceback
-        traceback.print_exc()
-        return jsonify({'error': str(e)}), 500
 
-@app.route('/api/chat', methods=['POST'])
+        traceback.print_exc()
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route("/api/chat", methods=["POST"])
 def chat():
     """
     Chat endpoint for text-based interactions
-    
+
     Expected JSON:
     - message: The user's message
     """
     try:
         data = request.get_json()
-        if not data or 'message' not in data:
-            return jsonify({'error': 'No message provided'}), 400
-        
-        user_message = data['message']
-        
+        if not data or "message" not in data:
+            return jsonify({"error": "No message provided"}), 400
+
+        user_message = data["message"]
+
         # Generate response
         response = ai_client.models.generate_content(
             model=TEXT_MODEL_NAME,
             contents=user_message,
         )
-        
+
         # Extract text from response safely
-        response_text = ''
-        
+        response_text = ""
+
         try:
             # Try direct text access first
             response_text = response.text
         except Exception:
             # If that fails, try alternative access
-            if hasattr(response, 'candidates') and response.candidates and len(response.candidates) > 0:
+            if (
+                hasattr(response, "candidates")
+                and response.candidates
+                and len(response.candidates) > 0
+            ):
                 candidate = response.candidates[0]
                 # Check if candidate has content with parts
-                if (hasattr(candidate, 'content') and candidate.content and 
-                    hasattr(candidate.content, 'parts') and candidate.content.parts and 
-                    len(candidate.content.parts) > 0):
+                if (
+                    hasattr(candidate, "content")
+                    and candidate.content
+                    and hasattr(candidate.content, "parts")
+                    and candidate.content.parts
+                    and len(candidate.content.parts) > 0
+                ):
                     response_text = candidate.content.parts[0].text
                 else:
                     # Content is empty, check if response was blocked
-                    if hasattr(candidate, 'finish_reason'):
-                        response_text = f'Response was blocked or filtered (Reason: {candidate.finish_reason}). Please try a different query.'
+                    if hasattr(candidate, "finish_reason"):
+                        response_text = f"Response was blocked or filtered (Reason: {candidate.finish_reason}). Please try a different query."
                     else:
-                        response_text = 'Received empty response from AI. Please try again.'
+                        response_text = (
+                            "Received empty response from AI. Please try again."
+                        )
             else:
-                response_text = 'No response from AI. Please try again.'
-        
-        return jsonify({
-            'message': response_text if response_text else 'No response generated',
-            'status': 'success'
-        })
-    
+                response_text = "No response from AI. Please try again."
+
+        return jsonify(
+            {
+                "message": response_text if response_text else "No response generated",
+                "status": "success",
+            }
+        )
+
     except Exception as e:
         print(f"Error in chat: {str(e)}")
-        return jsonify({'error': str(e)}), 500
+        return jsonify({"error": str(e)}), 500
 
-@app.route('/api/edit-video', methods=['POST'])
+
+@app.route("/api/edit-video", methods=["POST"])
 def edit_video():
     """
     Apply edits to a video based on AI suggestions
@@ -737,37 +847,50 @@ def edit_video():
     - audio_duck_db (optional): Reduce original audio by X dB (default 0)
     """
     try:
-        if 'video_file' not in request.files:
-            return jsonify({'error': 'No video file provided'}), 400
+        if "video_file" not in request.files:
+            return jsonify({"error": "No video file provided"}), 400
 
-        video_file = request.files['video_file']
-        edit_plan_str = request.form.get('edit_plan', '[]')
-        audio_file = request.files.get('audio_file', None)
-        audio_start = request.form.get('audio_start', '00:00')
-        audio_duck_db = float(request.form.get('audio_duck_db', '0'))
+        video_file = request.files["video_file"]
+        edit_plan_str = request.form.get("edit_plan", "[]")
+        audio_file = request.files.get("audio_file", None)
+        audio_start = request.form.get("audio_start", "00:00")
+        audio_duck_db = float(request.form.get("audio_duck_db", "0"))
 
-        if video_file.filename == '':
-            return jsonify({'error': 'No selected file'}), 400
+        if video_file.filename == "":
+            return jsonify({"error": "No selected file"}), 400
 
         try:
             edit_plan = json.loads(edit_plan_str)
         except json.JSONDecodeError:
-            return jsonify({'error': 'Invalid edit plan JSON'}), 400
+            return jsonify({"error": "Invalid edit plan JSON"}), 400
 
-        has_audio_cue = any(isinstance(e, dict) and e.get('type') == 'audio_cue' for e in edit_plan or [])
+        has_audio_cue = any(
+            isinstance(e, dict) and e.get("type") == "audio_cue"
+            for e in edit_plan or []
+        )
         if has_audio_cue and audio_file is None:
-            return jsonify({'error': 'Audio cue requested but no audio file provided. Select/import an audio effect before rendering.'}), 400
+            return jsonify(
+                {
+                    "error": "Audio cue requested but no audio file provided. Select/import an audio effect before rendering."
+                }
+            ), 400
 
         if edit_plan:
-            cue_times = [e.get('time') for e in edit_plan if isinstance(e, dict) and e.get('type') == 'audio_cue' and e.get('time')]
-            if cue_times and audio_start == '00:00':
+            cue_times = [
+                e.get("time")
+                for e in edit_plan
+                if isinstance(e, dict)
+                and e.get("type") == "audio_cue"
+                and e.get("time")
+            ]
+            if cue_times and audio_start == "00:00":
                 audio_start = cue_times[0]
 
         job_id = secrets.token_hex(16)
         job_dir = os.path.join(JOB_WORKDIR, job_id)
         os.makedirs(job_dir, exist_ok=True)
 
-        video_filename = secure_filename(video_file.filename) or 'input_video.mp4'
+        video_filename = secure_filename(video_file.filename) or "input_video.mp4"
         video_path = os.path.join(job_dir, video_filename)
         video_file.save(video_path)
         # Ensure file is written to disk before proceeding
@@ -776,7 +899,7 @@ def edit_video():
 
         audio_path = None
         if audio_file:
-            audio_filename = secure_filename(audio_file.filename) or 'effect_audio.mp3'
+            audio_filename = secure_filename(audio_file.filename) or "effect_audio.mp3"
             audio_path = os.path.join(job_dir, audio_filename)
             audio_file.save(audio_path)
             # Ensure audio file is written to disk
@@ -790,26 +913,31 @@ def edit_video():
             INSERT INTO video_jobs (job_id, job_type, status, progress, message)
             VALUES (%s, %s, %s, %s, %s)
             """,
-            (job_id, 'edit', 'queued', 0, 'Queued for rendering')
+            (job_id, "edit", "queued", 0, "Queued for rendering"),
         )
         conn.commit()
         cur.close()
         conn.close()
 
-        edit_video_task.delay(job_id, video_path, edit_plan, audio_path, audio_start, audio_duck_db)
+        edit_video_task.delay(
+            job_id, video_path, edit_plan, audio_path, audio_start, audio_duck_db
+        )
 
-        return jsonify({
-            'job_id': job_id,
-            'status': 'queued',
-            'job_type': 'edit',
-            'message': 'Video render queued'
-        }), 202
+        return jsonify(
+            {
+                "job_id": job_id,
+                "status": "queued",
+                "job_type": "edit",
+                "message": "Video render queued",
+            }
+        ), 202
 
     except Exception as e:
         print(f"Error queuing video edit: {str(e)}")
         import traceback
+
         traceback.print_exc()
-        return jsonify({'error': str(e)}), 500
+        return jsonify({"error": str(e)}), 500
 
 
 def time_to_seconds(time_str):
@@ -818,7 +946,7 @@ def time_to_seconds(time_str):
         return 0.0
 
     try:
-        parts = [p.strip() for p in str(time_str).split(':') if p.strip() != '']
+        parts = [p.strip() for p in str(time_str).split(":") if p.strip() != ""]
         if len(parts) == 1:
             return float(parts[0])
         if len(parts) == 2:
@@ -833,7 +961,92 @@ def time_to_seconds(time_str):
 
 # Paystack payment endpoints
 
-@app.route('/api/video-jobs/<job_id>', methods=['GET'])
+
+@app.route("/api/cache/stats", methods=["GET"])
+def get_cache_stats():
+    """Return analysis-cache hit/miss counters from Redis (read-only)."""
+    if _redis_client is None:
+        return jsonify(
+            {
+                "hits": 0,
+                "misses": 0,
+                "total_requests": 0,
+                "hit_ratio": 0.0,
+                "cache_enabled": ENABLE_ANALYSIS_CACHE,
+                "cache_ttl": CACHE_TTL,
+                "redis_connected": False,
+            }
+        ), 200
+
+    try:
+        hits = int(_redis_client.get("liveedit:cache:hits") or 0)
+        misses = int(_redis_client.get("liveedit:cache:misses") or 0)
+    except Exception as e:
+        print(f"Error reading cache stats: {e}")
+        return jsonify(
+            {
+                "hits": 0,
+                "misses": 0,
+                "total_requests": 0,
+                "hit_ratio": 0.0,
+                "cache_enabled": ENABLE_ANALYSIS_CACHE,
+                "cache_ttl": CACHE_TTL,
+                "redis_connected": False,
+            }
+        ), 200
+
+    total_requests = hits + misses
+    hit_ratio = 0.0 if total_requests == 0 else (hits / total_requests) * 100
+
+    return jsonify(
+        {
+            "hits": hits,
+            "misses": misses,
+            "total_requests": total_requests,
+            "hit_ratio": hit_ratio,
+            "cache_enabled": ENABLE_ANALYSIS_CACHE,
+            "cache_ttl": CACHE_TTL,
+            "redis_connected": True,
+        }
+    ), 200
+
+
+@app.route("/api/cache/clear", methods=["POST"])
+def clear_cache():
+    """Delete analysis cache keys and reset hit/miss counters."""
+    if _redis_client is None:
+        return jsonify(
+            {
+                "success": False,
+                "message": "Redis is not connected",
+            }
+        ), 200
+
+    try:
+        deleted_keys = 0
+        for key in _redis_client.scan_iter(match="liveedit:analysis:*", count=100):
+            deleted_keys += int(_redis_client.delete(key) or 0)
+
+        _redis_client.delete("liveedit:cache:hits", "liveedit:cache:misses")
+
+        return jsonify(
+            {
+                "success": True,
+                "deleted_keys": deleted_keys,
+                "metrics_reset": True,
+            }
+        ), 200
+    except Exception as e:
+        print(f"Error clearing analysis cache: {e}")
+        return jsonify(
+            {
+                "success": False,
+                "message": "Failed to clear analysis cache",
+            }
+        ), 500
+
+
+@app.route("/api/video-jobs/<job_id>", methods=["GET"])
 def get_video_job(job_id):
     """Check the status of a queued video job"""
     try:
@@ -841,34 +1054,39 @@ def get_video_job(job_id):
         cur = conn.cursor()
         cur.execute(
             """
-            SELECT job_id, job_type, status, progress, message, result_path, result_json, created_at, updated_at
+            SELECT job_id, job_type, status, progress, message, result_path, result_json,
+                   cache_status, created_at, updated_at
             FROM video_jobs
             WHERE job_id = %s
             """,
-            (job_id,)
+            (job_id,),
         )
         job = cur.fetchone()
         cur.close()
         conn.close()
 
         if not job:
-            return jsonify({'error': 'Job not found'}), 404
+            return jsonify({"error": "Job not found"}), 404
 
         job_dict = dict(job)
-        if job_dict.get('result_json') and isinstance(job_dict['result_json'], str):
+        if job_dict.get("result_json") and isinstance(job_dict["result_json"], str):
             try:
-                job_dict['result_json'] = json.loads(job_dict['result_json'])
+                job_dict["result_json"] = json.loads(job_dict["result_json"])
             except json.JSONDecodeError:
                 pass
 
-        return jsonify(job_dict), 200
+        response = jsonify(job_dict)
+        cache_status = job_dict.get("cache_status")
+        if cache_status:
+            response.headers["X-Cache"] = cache_status
+        return response, 200
 
     except Exception as e:
         print(f"Error fetching job status: {str(e)}")
-        return jsonify({'error': 'Failed to fetch job status'}), 500
+        return jsonify({"error": "Failed to fetch job status"}), 500
 
 
-@app.route('/api/video-jobs/<job_id>/download', methods=['GET'])
+@app.route("/api/video-jobs/<job_id>/download", methods=["GET"])
 def download_video_job(job_id):
     """Download the rendered video for a completed job"""
     try:
@@ -880,50 +1098,58 @@ def download_video_job(job_id):
             FROM video_jobs
             WHERE job_id = %s
             """,
-            (job_id,)
+            (job_id,),
         )
         job = cur.fetchone()
         cur.close()
         conn.close()
 
         if not job:
-            return jsonify({'error': 'Job not found'}), 404
+            return jsonify({"error": "Job not found"}), 404
 
-        if job['status'] != 'succeeded' or not job.get('result_path'):
-            return jsonify({'error': 'Result not ready'}), 400
+        if job["status"] != "succeeded" or not job.get("result_path"):
+            return jsonify({"error": "Result not ready"}), 400
 
-        result_path = job['result_path']
+        result_path = job["result_path"]
         if not os.path.exists(result_path):
-            return jsonify({'error': 'Result file missing'}), 404
+            return jsonify({"error": "Result file missing"}), 404
 
-        return send_file(result_path, mimetype='video/mp4', as_attachment=True, download_name=os.path.basename(result_path))
+        return send_file(
+            result_path,
+            mimetype="video/mp4",
+            as_attachment=True,
+            download_name=os.path.basename(result_path),
+        )
 
     except Exception as e:
         print(f"Error downloading job result: {str(e)}")
-        return jsonify({'error': 'Failed to download result'}), 500
+        return jsonify({"error": "Failed to download result"}), 500
 
-@app.route('/api/edit-multi', methods=['POST'])
+
+@app.route("/api/edit-multi", methods=["POST"])
 def edit_multi():
     """Queue multi-clip edit (up to 3 videos) with instructions-driven plan"""
     try:
-        video_files = request.files.getlist('video_files')
+        video_files = request.files.getlist("video_files")
         print(f"[DEBUG] Received {len(video_files)} video files from client")
         for i, vf in enumerate(video_files):
-            print(f"[DEBUG] File {i}: filename='{vf.filename}', content_type='{vf.content_type}'")
-        
+            print(
+                f"[DEBUG] File {i}: filename='{vf.filename}', content_type='{vf.content_type}'"
+            )
+
         if not video_files:
-            return jsonify({'error': 'No video files provided'}), 400
+            return jsonify({"error": "No video files provided"}), 400
         if len(video_files) > 3:
-            return jsonify({'error': 'Maximum of 3 video files allowed'}), 400
+            return jsonify({"error": "Maximum of 3 video files allowed"}), 400
 
-        prompt = (request.form.get('prompt') or '').strip()
+        prompt = (request.form.get("prompt") or "").strip()
         if not prompt:
-            return jsonify({'error': 'Prompt is required'}), 400
+            return jsonify({"error": "Prompt is required"}), 400
 
-        audio_file = request.files.get('audio_file')
-        audio_start = request.form.get('audio_start', '00:00')
+        audio_file = request.files.get("audio_file")
+        audio_start = request.form.get("audio_start", "00:00")
         try:
-            audio_duck_db = float(request.form.get('audio_duck_db', '0'))
+            audio_duck_db = float(request.form.get("audio_duck_db", "0"))
         except ValueError:
             audio_duck_db = 0.0
 
@@ -934,32 +1160,40 @@ def edit_multi():
         # Save videos to database
         video_count = 0
         for idx, vf in enumerate(video_files):
-            if not vf or vf.filename == '':
+            if not vf or vf.filename == "":
                 print(f"[DEBUG] Skipping empty file at index {idx}")
                 continue
-            
+
             # Read file data
             file_data = vf.read()
-            filename = secure_filename(vf.filename) or f'video{video_count}.mp4'
-            content_type = vf.content_type or 'video/mp4'
-            
+            filename = secure_filename(vf.filename) or f"video{video_count}.mp4"
+            content_type = vf.content_type or "video/mp4"
+
             # Save to database
-            video_id = save_video_to_db(job_id, video_count, filename, file_data, content_type)
-            print(f"[DEBUG] Video {video_count} saved to DB: id={video_id}, name={filename}, size={len(file_data)} bytes")
+            video_id = save_video_to_db(
+                job_id, video_count, filename, file_data, content_type
+            )
+            print(
+                f"[DEBUG] Video {video_count} saved to DB: id={video_id}, name={filename}, size={len(file_data)} bytes"
+            )
             video_count += 1
 
         if video_count == 0:
-            return jsonify({'error': 'No valid video files provided'}), 400
+            return jsonify({"error": "No valid video files provided"}), 400
 
         print(f"[DEBUG] Total videos saved to DB: {video_count}")
 
         audio_filename = None
         if audio_file and audio_file.filename:
-            audio_filename = secure_filename(audio_file.filename) or 'effect_audio.mp3'
+            audio_filename = secure_filename(audio_file.filename) or "effect_audio.mp3"
             audio_data = audio_file.read()
-            audio_content_type = audio_file.content_type or 'audio/mpeg'
-            audio_id = save_audio_to_db(job_id, audio_filename, audio_data, audio_content_type)
-            print(f"[DEBUG] Audio saved to DB: id={audio_id}, name={audio_filename}, size={len(audio_data)} bytes")
+            audio_content_type = audio_file.content_type or "audio/mpeg"
+            audio_id = save_audio_to_db(
+                job_id, audio_filename, audio_data, audio_content_type
+            )
+            print(
+                f"[DEBUG] Audio saved to DB: id={audio_id}, name={audio_filename}, size={len(audio_data)} bytes"
+            )
 
         conn = get_db_connection()
         cur = conn.cursor()
@@ -968,29 +1202,35 @@ def edit_multi():
             INSERT INTO video_jobs (job_id, job_type, status, progress, message)
             VALUES (%s, %s, %s, %s, %s)
             """,
-            (job_id, 'edit-multi', 'queued', 0, 'Queued for multi-clip rendering')
+            (job_id, "edit-multi", "queued", 0, "Queued for multi-clip rendering"),
         )
         conn.commit()
         cur.close()
         conn.close()
 
         # Pass job_id and audio_filename instead of file paths - Celery worker will extract from DB
-        edit_multi_task.delay(job_id, prompt, audio_filename, audio_start, audio_duck_db)
+        edit_multi_task.delay(
+            job_id, prompt, audio_filename, audio_start, audio_duck_db
+        )
 
-        return jsonify({
-            'job_id': job_id,
-            'status': 'queued',
-            'job_type': 'edit-multi',
-            'message': 'Multi-clip render queued'
-        }), 202
+        return jsonify(
+            {
+                "job_id": job_id,
+                "status": "queued",
+                "job_type": "edit-multi",
+                "message": "Multi-clip render queued",
+            }
+        ), 202
 
     except Exception as e:
         print(f"Error queuing multi-clip edit: {str(e)}")
-        import traceback; traceback.print_exc()
-        return jsonify({'error': str(e)}), 500
+        import traceback
+
+        traceback.print_exc()
+        return jsonify({"error": str(e)}), 500
 
 
-@app.route('/api/payments/plans', methods=['GET'])
+@app.route("/api/payments/plans", methods=["GET"])
 def get_subscription_plans():
     """Get all active subscription plans"""
     try:
@@ -1008,240 +1248,291 @@ def get_subscription_plans():
         return jsonify([dict(plan) for plan in plans]), 200
     except Exception as e:
         print(f"Error fetching plans: {str(e)}")
-        return jsonify({'error': 'Failed to fetch plans'}), 500
+        return jsonify({"error": "Failed to fetch plans"}), 500
 
-@app.route('/api/payments/initialize', methods=['POST'])
+
+@app.route("/api/payments/initialize", methods=["POST"])
 def initialize_payment():
     """Initialize Paystack payment"""
     try:
         data = request.get_json()
-        email = data.get('email')
-        plan_id = data.get('plan_id')
-        
+        email = data.get("email")
+        plan_id = data.get("plan_id")
+
         if not email or not plan_id:
-            return jsonify({'error': 'Email and plan_id are required'}), 400
-        
+            return jsonify({"error": "Email and plan_id are required"}), 400
+
         # Get plan details
         conn = get_db_connection()
         cur = conn.cursor()
-        cur.execute("""
+        cur.execute(
+            """
             SELECT id, name, price, currency
             FROM subscription_plans
             WHERE id = %s AND is_active = true
-        """, (plan_id,))
+        """,
+            (plan_id,),
+        )
         plan = cur.fetchone()
-        
+
         if not plan:
             cur.close()
             conn.close()
-            return jsonify({'error': 'Invalid plan'}), 404
-        
+            return jsonify({"error": "Invalid plan"}), 404
+
         # Get user
         cur.execute("SELECT id FROM users WHERE email = %s", (email,))
         user = cur.fetchone()
-        
+
         if not user:
             cur.close()
             conn.close()
-            return jsonify({'error': 'User not found'}), 404
-        
+            return jsonify({"error": "User not found"}), 404
+
         # Generate reference
-        reference = f"LE_{secrets.token_hex(8)}_{datetime.now().strftime('%Y%m%d%H%M%S')}"
-        
+        reference = (
+            f"LE_{secrets.token_hex(8)}_{datetime.now().strftime('%Y%m%d%H%M%S')}"
+        )
+
         # Save transaction
-        cur.execute("""
+        cur.execute(
+            """
             INSERT INTO transactions (user_id, reference, amount, currency, plan_id, status)
             VALUES (%s, %s, %s, %s, %s, 'pending')
             RETURNING id
-        """, (user['id'], reference, plan['price'], plan['currency'], plan['id']))
-        transaction_id = cur.fetchone()['id']
+        """,
+            (user["id"], reference, plan["price"], plan["currency"], plan["id"]),
+        )
+        transaction_id = cur.fetchone()["id"]
         conn.commit()
         cur.close()
         conn.close()
-        
+
         # Initialize Paystack payment
         from paystackapi.paystack import Paystack
-        paystack = Paystack(secret_key=os.getenv('PAYSTACK_SECRET_KEY'))
-        
+
+        paystack = Paystack(secret_key=os.getenv("PAYSTACK_SECRET_KEY"))
+
         response = paystack.transaction.initialize(
             email=email,
-            amount=int(float(plan['price']) * 100),  # Convert to kobo
+            amount=int(float(plan["price"]) * 100),  # Convert to kobo
             reference=reference,
-            callback_url=os.getenv('PAYSTACK_CALLBACK_URL', 'http://localhost:5173/payment/callback'),
+            callback_url=os.getenv(
+                "PAYSTACK_CALLBACK_URL", "http://localhost:5173/payment/callback"
+            ),
             metadata={
-                'plan_id': plan['id'],
-                'plan_name': plan['name'],
-                'transaction_id': transaction_id
-            }
+                "plan_id": plan["id"],
+                "plan_name": plan["name"],
+                "transaction_id": transaction_id,
+            },
         )
-        
-        if response['status']:
-            return jsonify({
-                'success': True,
-                'authorization_url': response['data']['authorization_url'],
-                'access_code': response['data']['access_code'],
-                'reference': reference
-            }), 200
+
+        if response["status"]:
+            return jsonify(
+                {
+                    "success": True,
+                    "authorization_url": response["data"]["authorization_url"],
+                    "access_code": response["data"]["access_code"],
+                    "reference": reference,
+                }
+            ), 200
         else:
-            return jsonify({'error': 'Payment initialization failed'}), 500
-            
+            return jsonify({"error": "Payment initialization failed"}), 500
+
     except Exception as e:
         print(f"Payment initialization error: {str(e)}")
         import traceback
-        traceback.print_exc()
-        return jsonify({'error': 'Payment initialization failed'}), 500
 
-@app.route('/api/payments/verify/<reference>', methods=['GET'])
+        traceback.print_exc()
+        return jsonify({"error": "Payment initialization failed"}), 500
+
+
+@app.route("/api/payments/verify/<reference>", methods=["GET"])
 def verify_payment(reference):
     """Verify Paystack payment and update subscription"""
     try:
         from paystackapi.paystack import Paystack
-        paystack = Paystack(secret_key=os.getenv('PAYSTACK_SECRET_KEY'))
-        
+
+        paystack = Paystack(secret_key=os.getenv("PAYSTACK_SECRET_KEY"))
+
         # Verify transaction with Paystack
         response = paystack.transaction.verify(reference=reference)
-        
-        if not response['status']:
-            return jsonify({'error': 'Payment verification failed'}), 400
-        
-        transaction_data = response['data']
-        
+
+        if not response["status"]:
+            return jsonify({"error": "Payment verification failed"}), 400
+
+        transaction_data = response["data"]
+
         # Update transaction in database
         conn = get_db_connection()
         cur = conn.cursor()
-        
-        cur.execute("""
+
+        cur.execute(
+            """
             SELECT user_id, plan_id, status
             FROM transactions
             WHERE reference = %s
-        """, (reference,))
+        """,
+            (reference,),
+        )
         transaction = cur.fetchone()
-        
+
         if not transaction:
             cur.close()
             conn.close()
-            return jsonify({'error': 'Transaction not found'}), 404
-        
-        if transaction['status'] == 'success':
+            return jsonify({"error": "Transaction not found"}), 404
+
+        if transaction["status"] == "success":
             cur.close()
             conn.close()
-            return jsonify({'message': 'Payment already verified', 'status': 'success'}), 200
-        
+            return jsonify(
+                {"message": "Payment already verified", "status": "success"}
+            ), 200
+
         # Check if payment was successful
-        if transaction_data['status'] == 'success':
+        if transaction_data["status"] == "success":
             # Get plan duration
-            cur.execute("""
+            cur.execute(
+                """
                 SELECT duration_days, name
                 FROM subscription_plans
                 WHERE id = %s
-            """, (transaction['plan_id'],))
+            """,
+                (transaction["plan_id"],),
+            )
             plan = cur.fetchone()
-            
+
             # Update transaction status
-            cur.execute("""
+            cur.execute(
+                """
                 UPDATE transactions
                 SET status = 'success',
                     paystack_reference = %s,
                     updated_at = CURRENT_TIMESTAMP
                 WHERE reference = %s
-            """, (transaction_data['reference'], reference))
-            
+            """,
+                (transaction_data["reference"], reference),
+            )
+
             # Update user subscription
             from datetime import timedelta
-            subscription_end = datetime.now() + timedelta(days=plan['duration_days'])
-            
-            cur.execute("""
+
+            subscription_end = datetime.now() + timedelta(days=plan["duration_days"])
+
+            cur.execute(
+                """
                 UPDATE users
                 SET subscription_status = 'active',
                     subscription_plan = %s,
                     subscription_end_date = %s
                 WHERE id = %s
-            """, (plan['name'], subscription_end, transaction['user_id']))
-            
+            """,
+                (plan["name"], subscription_end, transaction["user_id"]),
+            )
+
             conn.commit()
             cur.close()
             conn.close()
-            
-            return jsonify({
-                'success': True,
-                'message': 'Payment verified successfully',
-                'subscription': {
-                    'status': 'active',
-                    'plan': plan['name'],
-                    'end_date': subscription_end.isoformat()
+
+            return jsonify(
+                {
+                    "success": True,
+                    "message": "Payment verified successfully",
+                    "subscription": {
+                        "status": "active",
+                        "plan": plan["name"],
+                        "end_date": subscription_end.isoformat(),
+                    },
                 }
-            }), 200
+            ), 200
         else:
             # Payment failed
-            cur.execute("""
+            cur.execute(
+                """
                 UPDATE transactions
                 SET status = 'failed',
                     updated_at = CURRENT_TIMESTAMP
                 WHERE reference = %s
-            """, (reference,))
+            """,
+                (reference,),
+            )
             conn.commit()
             cur.close()
             conn.close()
-            
-            return jsonify({'error': 'Payment was not successful'}), 400
-            
+
+            return jsonify({"error": "Payment was not successful"}), 400
+
     except Exception as e:
         print(f"Payment verification error: {str(e)}")
         import traceback
-        traceback.print_exc()
-        return jsonify({'error': 'Payment verification failed'}), 500
 
-@app.route('/api/user/subscription', methods=['GET'])
+        traceback.print_exc()
+        return jsonify({"error": "Payment verification failed"}), 500
+
+
+@app.route("/api/user/subscription", methods=["GET"])
 def get_user_subscription():
     """Get user's current subscription status"""
     try:
         # Get email from auth header or query param
-        email = request.args.get('email')
+        email = request.args.get("email")
         if not email:
-            return jsonify({'error': 'Email is required'}), 400
-        
+            return jsonify({"error": "Email is required"}), 400
+
         conn = get_db_connection()
         cur = conn.cursor()
-        cur.execute("""
+        cur.execute(
+            """
             SELECT subscription_status, subscription_plan, subscription_end_date
             FROM users
             WHERE email = %s
-        """, (email,))
+        """,
+            (email,),
+        )
         user = cur.fetchone()
         cur.close()
         conn.close()
-        
+
         if not user:
-            return jsonify({'error': 'User not found'}), 404
-        
+            return jsonify({"error": "User not found"}), 404
+
         # Check if subscription expired
-        subscription_status = user['subscription_status']
-        if user['subscription_end_date'] and datetime.now() > user['subscription_end_date']:
-            subscription_status = 'expired'
-        
-        return jsonify({
-            'status': subscription_status or 'free',
-            'plan': user['subscription_plan'],
-            'end_date': user['subscription_end_date'].isoformat() if user['subscription_end_date'] else None
-        }), 200
-        
+        subscription_status = user["subscription_status"]
+        if (
+            user["subscription_end_date"]
+            and datetime.now() > user["subscription_end_date"]
+        ):
+            subscription_status = "expired"
+
+        return jsonify(
+            {
+                "status": subscription_status or "free",
+                "plan": user["subscription_plan"],
+                "end_date": user["subscription_end_date"].isoformat()
+                if user["subscription_end_date"]
+                else None,
+            }
+        ), 200
+
     except Exception as e:
         print(f"Error fetching subscription: {str(e)}")
-        return jsonify({'error': 'Failed to fetch subscription'}), 500
+        return jsonify({"error": "Failed to fetch subscription"}), 500
 
-@app.route('/api/user/transactions', methods=['GET'])
+
+@app.route("/api/user/transactions", methods=["GET"])
 def get_user_transactions():
     """Get user's payment history"""
     try:
-        email = request.args.get('email')
+        email = request.args.get("email")
         if not email:
-            return jsonify({'error': 'Email is required'}), 400
-        
+            return jsonify({"error": "Email is required"}), 400
+
         conn = get_db_connection()
         cur = conn.cursor()
-        
-        cur.execute("""
-            SELECT t.id, t.reference, t.amount, t.currency, t.status, 
+
+        cur.execute(
+            """
+            SELECT t.id, t.reference, t.amount, t.currency, t.status,
                    t.created_at, sp.name as plan_name
             FROM transactions t
             JOIN users u ON t.user_id = u.id
@@ -1249,27 +1540,30 @@ def get_user_transactions():
             WHERE u.email = %s
             ORDER BY t.created_at DESC
             LIMIT 20
-        """, (email,))
-        
+        """,
+            (email,),
+        )
+
         transactions = cur.fetchall()
         cur.close()
         conn.close()
-        
+
         return jsonify([dict(t) for t in transactions]), 200
-        
+
     except Exception as e:
         print(f"Error fetching transactions: {str(e)}")
-        return jsonify({'error': 'Failed to fetch transactions'}), 500
+        return jsonify({"error": "Failed to fetch transactions"}), 500
 
-@app.route('/api/generate-image', methods=['POST'])
+
+@app.route("/api/generate-image", methods=["POST"])
 def generate_image():
     """Generate a creative image for video moodboarding"""
     try:
         data = request.get_json() or {}
-        prompt = (data.get('prompt') or '').strip()
+        prompt = (data.get("prompt") or "").strip()
 
         if not prompt:
-            return jsonify({'error': 'Prompt is required'}), 400
+            return jsonify({"error": "Prompt is required"}), 400
 
         # Enhanced prompt for consistent visual style
         composed_prompt = f"{prompt}\nStyle: cinematic, high contrast, neon green (#00ff41) accents, dark slate backgrounds, professional studio lighting"
@@ -1277,47 +1571,53 @@ def generate_image():
         try:
             # Direct REST API call to Imagen
             import requests
-            
+
             url = f"https://generativelanguage.googleapis.com/v1beta/models/{IMAGE_MODEL_ID}:predict"
             headers = {
-                'Content-Type': 'application/json',
+                "Content-Type": "application/json",
             }
             payload = {
-                'instances': [{'prompt': composed_prompt}],
-                'parameters': {
-                    'sampleCount': 1,
-                    'aspectRatio': '16:9'
-                }
+                "instances": [{"prompt": composed_prompt}],
+                "parameters": {"sampleCount": 1, "aspectRatio": "16:9"},
             }
-            
-            response = requests.post(f"{url}?key={API_KEY}", headers=headers, json=payload)
-            
+
+            response = requests.post(
+                f"{url}?key={API_KEY}", headers=headers, json=payload
+            )
+
             if response.status_code == 200:
                 result = response.json()
                 # Extract image data from predictions
-                if 'predictions' in result and len(result['predictions']) > 0:
-                    image_base64 = result['predictions'][0].get('bytesBase64Encoded', '')
+                if "predictions" in result and len(result["predictions"]) > 0:
+                    image_base64 = result["predictions"][0].get(
+                        "bytesBase64Encoded", ""
+                    )
                     if image_base64:
-                        return jsonify({
-                            'image_base64': image_base64,
-                            'mime_type': 'image/png'
-                        }), 200
-            
+                        return jsonify(
+                            {"image_base64": image_base64, "mime_type": "image/png"}
+                        ), 200
+
             # If we get here, the API call didn't work as expected
-            raise ValueError(f"API returned status {response.status_code}: {response.text[:200]}")
-            
+            raise ValueError(
+                f"API returned status {response.status_code}: {response.text[:200]}"
+            )
+
         except Exception as img_err:
             print(f"Image generation failed: {img_err}")
-            return jsonify({
-                'error': 'Image generation is not currently available. Imagen model access may not be enabled for your API key. Please enable Imagen 3 in Google AI Studio or use an alternative image generation service.',
-                'details': str(img_err)
-            }), 502
-            
+            return jsonify(
+                {
+                    "error": "Image generation is not currently available. Imagen model access may not be enabled for your API key. Please enable Imagen 3 in Google AI Studio or use an alternative image generation service.",
+                    "details": str(img_err),
+                }
+            ), 502
+
     except Exception as e:
         print(f"Image generation error: {str(e)}")
         import traceback
+
         traceback.print_exc()
-        return jsonify({'error': f'Image generation failed: {str(e)}'}), 500
+        return jsonify({"error": f"Image generation failed: {str(e)}"}), 500
+
 
 # ═══════════════════════════════════════════════════════════════════════════════
 # VIDEO INGESTION & UNDERSTANDING ROUTES
@@ -1328,7 +1628,8 @@ def generate_image():
 _gemini_files_store: dict = {}
 _rendered_video_store: dict = {}
 
-@app.route('/api/video-ingestion/upload', methods=['POST'])
+
+@app.route("/api/video-ingestion/upload", methods=["POST"])
 def video_ingestion_upload():
     """
     Upload a video for deep AI analysis.
@@ -1344,26 +1645,30 @@ def video_ingestion_upload():
     Returns JSON with full analysis results.
     """
     try:
-        if 'file' not in request.files:
-            return jsonify({'error': 'No file provided'}), 400
+        if "file" not in request.files:
+            return jsonify({"error": "No file provided"}), 400
 
-        file = request.files['file']
+        file = request.files["file"]
         if not file.filename:
-            return jsonify({'error': 'Empty filename'}), 400
+            return jsonify({"error": "Empty filename"}), 400
 
         filename = secure_filename(file.filename)
         file_data = file.read()
-        mime_type = file.content_type or 'video/mp4'
+        mime_type = file.content_type or "video/mp4"
 
         # Parse options
-        use_gcs = request.form.get('use_gcs', 'false').lower() == 'true'
-        use_vi = request.form.get('use_vi', 'false').lower() == 'true'
-        vi_features_raw = request.form.get('vi_features', '')
-        vi_features = [f.strip() for f in vi_features_raw.split(',') if f.strip()] or None
-        custom_prompt = request.form.get('custom_prompt', None)
-        duration = float(request.form.get('duration', 0))
+        use_gcs = request.form.get("use_gcs", "false").lower() == "true"
+        use_vi = request.form.get("use_vi", "false").lower() == "true"
+        vi_features_raw = request.form.get("vi_features", "")
+        vi_features = [
+            f.strip() for f in vi_features_raw.split(",") if f.strip()
+        ] or None
+        custom_prompt = request.form.get("custom_prompt", None)
+        duration = float(request.form.get("duration", 0))
 
-        print(f"[INGEST] Starting ingestion for {filename} ({len(file_data)} bytes, {duration}s)")
+        print(
+            f"[INGEST] Starting ingestion for {filename} ({len(file_data)} bytes, {duration}s)"
+        )
 
         result = full_video_ingestion(
             file_data=file_data,
@@ -1377,13 +1682,13 @@ def video_ingestion_upload():
         )
 
         # Store the Gemini file URI for follow-up queries
-        if 'gemini_file_uri' in result:
-            _gemini_files_store[result['gemini_file_uri']] = {
-                'name': result.get('gemini_file_name'),
-                'uri': result['gemini_file_uri'],
-                'filename': filename,
-                'cache_name': result.get('cache_name'),
-                'duration': duration,
+        if "gemini_file_uri" in result:
+            _gemini_files_store[result["gemini_file_uri"]] = {
+                "name": result.get("gemini_file_name"),
+                "uri": result["gemini_file_uri"],
+                "filename": filename,
+                "cache_name": result.get("cache_name"),
+                "duration": duration,
             }
 
         return jsonify(result), 200
@@ -1392,27 +1697,43 @@ def video_ingestion_upload():
         error_msg = str(e)
         print(f"[ERROR] Video ingestion failed: {error_msg}")
         import traceback
+
         traceback.print_exc()
-        
+
         # Check if quota error
-        if "429" in error_msg or "RESOURCE_EXHAUSTED" in error_msg or "quota" in error_msg.lower() or "QUOTA_EXHAUSTED" in error_msg:
-            is_perm = "limit: 0" in error_msg or "free_tier_requests" in error_msg or "QUOTA_EXHAUSTED" in error_msg
-            return jsonify({
-                'error': 'QUOTA_EXHAUSTED' if is_perm else 'Gemini API quota exceeded',
-                'message': (
-                    'This request is still hitting Gemini Developer API free-tier quota. '
-                    'Configure Vertex AI in LiveEditBackend/.env and authenticate with '
-                    'Application Default Credentials.'
-                ) if is_perm else (
-                    'Free tier rate limit hit. Please wait a few minutes and try again.'
-                ),
-                'details': error_msg[:300]
-            }), 429
-        
-        return jsonify({'error': str(e)}), 500
+        if (
+            "429" in error_msg
+            or "RESOURCE_EXHAUSTED" in error_msg
+            or "quota" in error_msg.lower()
+            or "QUOTA_EXHAUSTED" in error_msg
+        ):
+            is_perm = (
+                "limit: 0" in error_msg
+                or "free_tier_requests" in error_msg
+                or "QUOTA_EXHAUSTED" in error_msg
+            )
+            return jsonify(
+                {
+                    "error": "QUOTA_EXHAUSTED"
+                    if is_perm
+                    else "Gemini API quota exceeded",
+                    "message": (
+                        "This request is still hitting Gemini Developer API free-tier quota. "
+                        "Configure Vertex AI in LiveEditBackend/.env and authenticate with "
+                        "Application Default Credentials."
+                    )
+                    if is_perm
+                    else (
+                        "Free tier rate limit hit. Please wait a few minutes and try again."
+                    ),
+                    "details": error_msg[:300],
+                }
+            ), 429
+
+        return jsonify({"error": str(e)}), 500
 
 
-@app.route('/api/video-ingestion/query', methods=['POST'])
+@app.route("/api/video-ingestion/query", methods=["POST"])
 def video_ingestion_query():
     """
     Send a follow-up question about a previously uploaded video.
@@ -1426,13 +1747,13 @@ def video_ingestion_query():
     try:
         data = request.get_json()
         if not data:
-            return jsonify({'error': 'Request body required'}), 400
+            return jsonify({"error": "Request body required"}), 400
 
-        gemini_file_uri = data.get('gemini_file_uri')
-        prompt = data.get('prompt')
+        gemini_file_uri = data.get("gemini_file_uri")
+        prompt = data.get("prompt")
 
         if not gemini_file_uri or not prompt:
-            return jsonify({'error': 'gemini_file_uri and prompt are required'}), 400
+            return jsonify({"error": "gemini_file_uri and prompt are required"}), 400
 
         stored = _gemini_files_store.get(gemini_file_uri)
 
@@ -1458,18 +1779,20 @@ def video_ingestion_query():
             )
             answer = response.text
 
-        return jsonify({
-            'answer': answer,
-            'gemini_file_uri': gemini_file_uri,
-            'cached': stored.get('cache_name') is not None if stored else False,
-        }), 200
+        return jsonify(
+            {
+                "answer": answer,
+                "gemini_file_uri": gemini_file_uri,
+                "cached": stored.get("cache_name") is not None if stored else False,
+            }
+        ), 200
 
     except Exception as e:
         print(f"[ERROR] Video query failed: {e}")
-        return jsonify({'error': str(e)}), 500
+        return jsonify({"error": str(e)}), 500
 
 
-@app.route('/api/video-ingestion/scene-summary', methods=['POST'])
+@app.route("/api/video-ingestion/scene-summary", methods=["POST"])
 def video_ingestion_scene_summary():
     """
     Get a detailed natural-language summary of a specific time segment.
@@ -1481,22 +1804,22 @@ def video_ingestion_scene_summary():
     """
     try:
         data = request.get_json()
-        gemini_file_uri = data.get('gemini_file_uri')
-        start = data.get('start', '0:00')
-        end = data.get('end', '0:30')
+        gemini_file_uri = data.get("gemini_file_uri")
+        start = data.get("start", "0:00")
+        end = data.get("end", "0:30")
 
         if not gemini_file_uri:
-            return jsonify({'error': 'gemini_file_uri is required'}), 400
+            return jsonify({"error": "gemini_file_uri is required"}), 400
 
         stored = _gemini_files_store.get(gemini_file_uri)
-        duration = stored.get('duration', 0) if stored else 0
+        duration = stored.get("duration", 0) if stored else 0
 
         # Build a lightweight file-like object with uri and mime_type
         class _GeminiRef:
             def __init__(self, uri):
                 self.uri = uri
                 self.mime_type = "video/mp4"
-                self.name = stored.get('name', '') if stored else ''
+                self.name = stored.get("name", "") if stored else ""
 
         summary = get_scene_summary(
             gemini_file=_GeminiRef(gemini_file_uri),
@@ -1505,17 +1828,19 @@ def video_ingestion_scene_summary():
             video_duration_seconds=duration,
         )
 
-        return jsonify({
-            'summary': summary,
-            'segment': {'start': start, 'end': end},
-        }), 200
+        return jsonify(
+            {
+                "summary": summary,
+                "segment": {"start": start, "end": end},
+            }
+        ), 200
 
     except Exception as e:
         print(f"[ERROR] Scene summary failed: {e}")
-        return jsonify({'error': str(e)}), 500
+        return jsonify({"error": str(e)}), 500
 
 
-@app.route('/api/video-ingestion/video-intelligence', methods=['POST'])
+@app.route("/api/video-ingestion/video-intelligence", methods=["POST"])
 def video_ingestion_vi():
     """
     Run Vertex AI Video Intelligence on a GCS video (requires service account).
@@ -1526,42 +1851,43 @@ def video_ingestion_vi():
     """
     try:
         data = request.get_json()
-        gcs_uri = data.get('gcs_uri')
-        features = data.get('features')
+        gcs_uri = data.get("gcs_uri")
+        features = data.get("features")
 
         if not gcs_uri:
-            return jsonify({'error': 'gcs_uri is required'}), 400
+            return jsonify({"error": "gcs_uri is required"}), 400
 
         metadata = extract_video_intelligence_metadata(gcs_uri, features=features)
         return jsonify(metadata), 200
 
     except ImportError as ie:
-        return jsonify({'error': str(ie)}), 501
+        return jsonify({"error": str(ie)}), 501
     except Exception as e:
         print(f"[ERROR] Video Intelligence failed: {e}")
-        return jsonify({'error': str(e)}), 500
+        return jsonify({"error": str(e)}), 500
 
 
-@app.route('/api/video-ingestion/files', methods=['GET'])
+@app.route("/api/video-ingestion/files", methods=["GET"])
 def video_ingestion_list_files():
     """List all uploaded Gemini files that are still available in the session."""
     files = [
         {
-            'gemini_file_uri': uri,
-            'filename': info.get('filename'),
-            'cache_name': info.get('cache_name'),
-            'duration': info.get('duration'),
+            "gemini_file_uri": uri,
+            "filename": info.get("filename"),
+            "cache_name": info.get("cache_name"),
+            "duration": info.get("duration"),
         }
         for uri, info in _gemini_files_store.items()
     ]
-    return jsonify({'files': files}), 200
+    return jsonify({"files": files}), 200
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
 # CONVERSATIONAL VIDEO DIRECTOR (STATEFUL WORKFLOW)
 # ═══════════════════════════════════════════════════════════════════════════════
 
-@app.route('/api/video-director/session/start', methods=['POST'])
+
+@app.route("/api/video-director/session/start", methods=["POST"])
 def video_director_start_session():
     """
     Start a stateful conversational editing session for an uploaded Gemini video.
@@ -1575,33 +1901,35 @@ def video_director_start_session():
     """
     try:
         data = request.get_json() or {}
-        gemini_file_uri = data.get('gemini_file_uri')
+        gemini_file_uri = data.get("gemini_file_uri")
         if not gemini_file_uri:
-            return jsonify({'error': 'gemini_file_uri is required'}), 400
+            return jsonify({"error": "gemini_file_uri is required"}), 400
 
         stored = _gemini_files_store.get(gemini_file_uri, {})
         session = start_interaction_session(
             gemini_file_uri=gemini_file_uri,
-            gemini_mime_type=data.get('gemini_mime_type', 'video/mp4'),
-            cache_name=data.get('cache_name') or stored.get('cache_name'),
-            analysis=data.get('analysis') or {},
-            video_intelligence=data.get('video_intelligence') or {},
+            gemini_mime_type=data.get("gemini_mime_type", "video/mp4"),
+            cache_name=data.get("cache_name") or stored.get("cache_name"),
+            analysis=data.get("analysis") or {},
+            video_intelligence=data.get("video_intelligence") or {},
         )
 
-        return jsonify({
-            'session_id': session['session_id'],
-            'gemini_file_uri': session['gemini_file_uri'],
-            'cache_name': session.get('cache_name'),
-            'previous_interaction_id': session.get('previous_interaction_id'),
-            'thought_signature': session.get('thought_signature'),
-            'created_at': session.get('created_at'),
-        }), 200
+        return jsonify(
+            {
+                "session_id": session["session_id"],
+                "gemini_file_uri": session["gemini_file_uri"],
+                "cache_name": session.get("cache_name"),
+                "previous_interaction_id": session.get("previous_interaction_id"),
+                "thought_signature": session.get("thought_signature"),
+                "created_at": session.get("created_at"),
+            }
+        ), 200
     except Exception as e:
         print(f"[ERROR] Failed to start director session: {e}")
-        return jsonify({'error': str(e)}), 500
+        return jsonify({"error": str(e)}), 500
 
 
-@app.route('/api/video-director/interaction', methods=['POST'])
+@app.route("/api/video-director/interaction", methods=["POST"])
 def video_director_interaction():
     """
     Continue conversational editing.
@@ -1612,22 +1940,22 @@ def video_director_interaction():
     """
     try:
         data = request.get_json() or {}
-        session_id = data.get('session_id')
-        prompt = data.get('prompt')
+        session_id = data.get("session_id")
+        prompt = data.get("prompt")
 
         if not session_id or not prompt:
-            return jsonify({'error': 'session_id and prompt are required'}), 400
+            return jsonify({"error": "session_id and prompt are required"}), 400
 
         result = run_interaction_turn(session_id=session_id, user_prompt=prompt)
         return jsonify(result), 200
     except ValueError as ve:
-        return jsonify({'error': str(ve)}), 404
+        return jsonify({"error": str(ve)}), 404
     except Exception as e:
         print(f"[ERROR] Director interaction failed: {e}")
-        return jsonify({'error': str(e)}), 500
+        return jsonify({"error": str(e)}), 500
 
 
-@app.route('/api/video-director/plan', methods=['POST'])
+@app.route("/api/video-director/plan", methods=["POST"])
 def video_director_plan():
     """
     Generate structured edit JSON (scene segmentation, highlights, pruning, selected clips).
@@ -1639,12 +1967,12 @@ def video_director_plan():
     """
     try:
         data = request.get_json() or {}
-        session_id = data.get('session_id')
-        creative_brief = data.get('creative_brief')
-        target_duration_seconds = data.get('target_duration_seconds')
+        session_id = data.get("session_id")
+        creative_brief = data.get("creative_brief")
+        target_duration_seconds = data.get("target_duration_seconds")
 
         if not session_id or not creative_brief:
-            return jsonify({'error': 'session_id and creative_brief are required'}), 400
+            return jsonify({"error": "session_id and creative_brief are required"}), 400
 
         result = generate_structured_edit_plan(
             session_id=session_id,
@@ -1653,13 +1981,13 @@ def video_director_plan():
         )
         return jsonify(result), 200
     except ValueError as ve:
-        return jsonify({'error': str(ve)}), 404
+        return jsonify({"error": str(ve)}), 404
     except Exception as e:
         print(f"[ERROR] Director plan generation failed: {e}")
-        return jsonify({'error': str(e)}), 500
+        return jsonify({"error": str(e)}), 500
 
 
-@app.route('/api/video-director/render', methods=['POST'])
+@app.route("/api/video-director/render", methods=["POST"])
 def video_director_render():
     """
     Render final video from structured edit plan.
@@ -1670,30 +1998,32 @@ def video_director_render():
       - audio_file (optional)
     """
     try:
-        if 'video_file' not in request.files:
-            return jsonify({'error': 'video_file is required'}), 400
+        if "video_file" not in request.files:
+            return jsonify({"error": "video_file is required"}), 400
 
-        video_file = request.files['video_file']
+        video_file = request.files["video_file"]
         if not video_file.filename:
-            return jsonify({'error': 'No selected video file'}), 400
+            return jsonify({"error": "No selected video file"}), 400
 
-        edit_plan_raw = request.form.get('edit_plan')
+        edit_plan_raw = request.form.get("edit_plan")
         if not edit_plan_raw:
-            return jsonify({'error': 'edit_plan is required'}), 400
+            return jsonify({"error": "edit_plan is required"}), 400
 
         try:
             edit_plan = json.loads(edit_plan_raw)
         except json.JSONDecodeError:
-            return jsonify({'error': 'edit_plan must be valid JSON'}), 400
+            return jsonify({"error": "edit_plan must be valid JSON"}), 400
 
-        with tempfile.NamedTemporaryFile(suffix='.mp4', delete=False) as tmp_in:
+        with tempfile.NamedTemporaryFile(suffix=".mp4", delete=False) as tmp_in:
             video_file.save(tmp_in.name)
             input_path = tmp_in.name
 
         audio_path = None
-        if 'audio_file' in request.files and request.files['audio_file'].filename:
-            audio_file = request.files['audio_file']
-            with tempfile.NamedTemporaryFile(suffix=os.path.splitext(audio_file.filename)[1] or '.mp3', delete=False) as tmp_audio:
+        if "audio_file" in request.files and request.files["audio_file"].filename:
+            audio_file = request.files["audio_file"]
+            with tempfile.NamedTemporaryFile(
+                suffix=os.path.splitext(audio_file.filename)[1] or ".mp3", delete=False
+            ) as tmp_audio:
                 audio_file.save(tmp_audio.name)
                 audio_path = tmp_audio.name
 
@@ -1705,47 +2035,51 @@ def video_director_render():
 
         render_id = f"rend_{secrets.token_hex(8)}"
         _rendered_video_store[render_id] = {
-            'path': render_result['output_path'],
-            'created_at': datetime.utcnow().isoformat(),
-            'meta': render_result,
+            "path": render_result["output_path"],
+            "created_at": datetime.utcnow().isoformat(),
+            "meta": render_result,
         }
 
-        return jsonify({
-            'render_id': render_id,
-            'download_url': f"/api/video-director/render/{render_id}",
-            'meta': render_result,
-        }), 200
+        return jsonify(
+            {
+                "render_id": render_id,
+                "download_url": f"/api/video-director/render/{render_id}",
+                "meta": render_result,
+            }
+        ), 200
     except Exception as e:
         print(f"[ERROR] Director render failed: {e}")
-        return jsonify({'error': str(e)}), 500
+        return jsonify({"error": str(e)}), 500
 
 
-@app.route('/api/video-director/render/<render_id>', methods=['GET'])
+@app.route("/api/video-director/render/<render_id>", methods=["GET"])
 def video_director_download_render(render_id: str):
     """Download a previously rendered video."""
     info = _rendered_video_store.get(render_id)
     if not info:
-        return jsonify({'error': 'render_id not found'}), 404
+        return jsonify({"error": "render_id not found"}), 404
 
-    path = info.get('path')
+    path = info.get("path")
     if not path or not os.path.exists(path):
-        return jsonify({'error': 'Rendered file no longer available'}), 404
+        return jsonify({"error": "Rendered file no longer available"}), 404
 
-    return send_file(path, as_attachment=True, download_name=f'{render_id}.mp4', mimetype='video/mp4')
+    return send_file(
+        path, as_attachment=True, download_name=f"{render_id}.mp4", mimetype="video/mp4"
+    )
 
 
-@app.route('/api/video-director/session/<session_id>', methods=['GET'])
+@app.route("/api/video-director/session/<session_id>", methods=["GET"])
 def video_director_get_session(session_id: str):
     """Inspect current session state (history, thought signature, previous interaction id)."""
     try:
         session = get_session(session_id)
         return jsonify(session), 200
     except ValueError as ve:
-        return jsonify({'error': str(ve)}), 404
+        return jsonify({"error": str(ve)}), 404
     except Exception as e:
-        return jsonify({'error': str(e)}), 500
+        return jsonify({"error": str(e)}), 500
 
 
-if __name__ == '__main__':
-    port = int(os.getenv('PORT', 5000))
-    app.run(debug=False, host='0.0.0.0', port=port)
+if __name__ == "__main__":
+    port = int(os.getenv("PORT", 5000))
+    app.run(debug=False, host="0.0.0.0", port=port)
