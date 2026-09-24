@@ -246,7 +246,8 @@ def analyze_video_task(job_id: str, video_path: str, user_prompt: str) -> Dict[s
         mime_type, _ = mimetypes.guess_type(video_path)
         if not mime_type:
             mime_type = "video/mp4"
-        video_part = {"mime_type": mime_type, "data": video_data}
+        from ai_client import genai_types
+        video_part = genai_types.Part.from_bytes(data=video_data, mime_type=mime_type)
         analysis_prompt = (
             f"You are viewing a video file. Analyze frame-by-frame.\nUSER REQUEST: {user_prompt}\n"
             "Return strict JSON with summary, key_events, and edit_plan."
@@ -354,6 +355,22 @@ def get_video_dimensions(path: str) -> Optional[tuple]:
         return None
 
 
+def has_audio_stream(path: str) -> bool:
+    """Check if a media file has at least one audio stream."""
+    try:
+        cmd = [
+            "ffprobe", "-v", "error",
+            "-select_streams", "a",
+            "-show_entries", "stream=index",
+            "-of", "csv=p=0",
+            path,
+        ]
+        out = subprocess.check_output(cmd, stderr=subprocess.STDOUT).decode().strip()
+        return len(out) > 0
+    except Exception:
+        return False
+
+
 def build_concat_command(
     ordered_paths: List[str], order_orig_indices: List[int], cuts_map: Dict[int, Dict[str, str]], concat_path: str
 ) -> List[str]:
@@ -368,6 +385,9 @@ def build_concat_command(
     
     # Use the first video's dimensions as target (or find max)
     target_w, target_h = dimensions[0] if dimensions else (854, 480)
+
+    # Check if ANY input has audio; if none do, we concat video-only
+    any_has_audio = any(has_audio_stream(p) for p in ordered_paths)
     
     filter_parts: List[str] = []
     v_labels: List[str] = []
@@ -408,15 +428,30 @@ def build_concat_command(
         
         # Construct complete filter strings with proper FFmpeg syntax
         v_filter = f"[{i}:v]" + ",".join(v_filter_chain) + f"[{v_label}]"
-        a_filter = f"[{i}:a]" + ",".join(a_filter_chain) + f"[{a_label}]"
-
         filter_parts.append(v_filter)
-        filter_parts.append(a_filter)
         v_labels.append(v_label)
-        a_labels.append(a_label)
 
-    concat_inputs = "".join(f"[{v}][{a}]" for v, a in zip(v_labels, a_labels))
-    filter_parts.append(f"{concat_inputs}concat=n={len(ordered_paths)}:v=1:a=1[vout][aout]")
+        if any_has_audio:
+            this_has_audio = has_audio_stream(path)
+            if this_has_audio:
+                a_filter = f"[{i}:a]" + ",".join(a_filter_chain) + f"[{a_label}]"
+            else:
+                # Generate silent audio to match this clip's duration
+                dur = probe_duration(path) or 10.0
+                if end_sec is not None:
+                    dur = min(dur, end_sec)
+                if start_sec is not None:
+                    dur = dur - start_sec
+                a_filter = f"anullsrc=r=44100:cl=stereo[{a_label}_raw];[{a_label}_raw]atrim=duration={dur:.3f},asetpts=PTS-STARTPTS[{a_label}]"
+            filter_parts.append(a_filter)
+            a_labels.append(a_label)
+
+    if any_has_audio:
+        concat_inputs = "".join(f"[{v}][{a}]" for v, a in zip(v_labels, a_labels))
+        filter_parts.append(f"{concat_inputs}concat=n={len(ordered_paths)}:v=1:a=1[vout][aout]")
+    else:
+        concat_inputs = "".join(f"[{v}]" for v in v_labels)
+        filter_parts.append(f"{concat_inputs}concat=n={len(ordered_paths)}:v=1:a=0[vout]")
 
     cmd: List[str] = ["ffmpeg"]
     for p in ordered_paths:
@@ -427,8 +462,12 @@ def build_concat_command(
             ";".join(filter_parts),
             "-map",
             "[vout]",
-            "-map",
-            "[aout]",
+        ]
+    )
+    if any_has_audio:
+        cmd.extend(["-map", "[aout]", "-c:a", "aac", "-b:a", "128k"])
+    cmd.extend(
+        [
             "-c:v",
             "libx264",
             "-preset",
@@ -443,10 +482,6 @@ def build_concat_command(
             "23",
             "-g",
             "60", 
-            "-c:a",
-            "aac",
-            "-b:a",
-            "128k",
             "-movflags",
             "+faststart", 
             "-y",

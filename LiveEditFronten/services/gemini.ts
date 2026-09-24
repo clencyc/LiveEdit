@@ -84,6 +84,17 @@ export async function analyzeVideoWithBackend(
     }
     
     const data = await response.json();
+    if (data.job_id) {
+      // Poll for completion
+      while (true) {
+        await new Promise(r => setTimeout(r, 2000));
+        const res = await fetch(`${BACKEND_URL}/api/video-jobs/${data.job_id}`);
+        if (!res.ok) throw new Error('Failed to fetch job status');
+        const jobData = await res.json();
+        if (jobData.status === 'succeeded') return jobData.result_json as VideoAnalysisResult;
+        if (jobData.status === 'failed') throw new Error(jobData.message || 'Job failed');
+      }
+    }
     return data as VideoAnalysisResult;
   } catch (error) {
     console.error('Error analyzing video:', error);
