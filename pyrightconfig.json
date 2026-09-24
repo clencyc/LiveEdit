@@ -1,0 +1,12 @@
+{
+  "include": ["LiveEditBackend"],
+  "venvPath": "LiveEditBackend",
+  "venv": "venv",
+  "pythonVersion": "3.12",
+  "executionEnvironments": [
+    {
+      "root": "LiveEditBackend",
+      "extraPaths": ["."]
+    }
+  ]
+}

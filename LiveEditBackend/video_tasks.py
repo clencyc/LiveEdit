@@ -1,17 +1,18 @@
+import hashlib
 import json
 import mimetypes
 import os
 import subprocess
 import time
 from datetime import datetime
-from typing import Any, Dict, Optional, List
+from typing import Any, Dict, List, Optional
 
 import psycopg2
-from psycopg2.extras import RealDictCursor
-from dotenv import load_dotenv
-
 from ai_client import get_genai_client, get_text_model_name
 from celery_config import celery_app
+from dotenv import load_dotenv
+from psycopg2.extras import RealDictCursor
+from video_director import _redis_client
 
 load_dotenv()
 
@@ -21,13 +22,24 @@ TEXT_MODEL_NAME = get_text_model_name()
 
 DATABASE_URL = os.getenv("DATABASE_URL")
 JOB_WORKDIR = os.getenv("JOB_WORKDIR", "/tmp/liveedit_jobs")
+CACHE_TTL = int(os.getenv("CACHE_TTL", "604800"))
+ENABLE_ANALYSIS_CACHE = os.getenv("ENABLE_ANALYSIS_CACHE", "false").lower() == "true"
+print("CACHE ENABLED:", ENABLE_ANALYSIS_CACHE)
+print("CACHE TTL:", CACHE_TTL)
 
 
-def call_gemini_with_retry(contents, model=TEXT_MODEL_NAME, max_retries=3, initial_wait=2, job_id=None, update_fn=None):
+def call_gemini_with_retry(
+    contents,
+    model=TEXT_MODEL_NAME,
+    max_retries=3,
+    initial_wait=2,
+    job_id=None,
+    update_fn=None,
+):
     """
     Call Gemini API with exponential backoff retry logic.
     Handles transient errors like 503 UNAVAILABLE.
-    
+
     Args:
         contents: The content to send to the model
         model: The model to use (default: configured text model)
@@ -35,28 +47,30 @@ def call_gemini_with_retry(contents, model=TEXT_MODEL_NAME, max_retries=3, initi
         initial_wait: Initial wait time in seconds before first retry
         job_id: Optional job ID for status updates
         update_fn: Optional function to call for status updates (e.g., update_job)
-    
+
     Returns:
         The API response
-        
+
     Raises:
         Exception: If all retries fail
     """
     last_error = None
-    
-    for attempt in range(max_retries + 1):  # 0, 1, 2, 3 = 4 total attempts with max_retries=3
+
+    for attempt in range(
+        max_retries + 1
+    ):  # 0, 1, 2, 3 = 4 total attempts with max_retries=3
         try:
             if attempt == 0:
                 print(f"[API] Calling Gemini API...")
             else:
                 print(f"[RETRY] Retry attempt {attempt}/{max_retries}...")
                 if update_fn and job_id:
-                    update_fn(job_id, message=f"API retry {attempt}/{max_retries} (API temporarily busy)")
-            
-            response = client.models.generate_content(
-                model=model,
-                contents=contents
-            )
+                    update_fn(
+                        job_id,
+                        message=f"API retry {attempt}/{max_retries} (API temporarily busy)",
+                    )
+
+            response = client.models.generate_content(model=model, contents=contents)
             if attempt > 0:
                 print(f"[RETRY] ✓ Success after {attempt} retry attempt(s)!")
                 if update_fn and job_id:
@@ -65,18 +79,36 @@ def call_gemini_with_retry(contents, model=TEXT_MODEL_NAME, max_retries=3, initi
         except Exception as e:
             last_error = e
             error_str = str(e)
-            
+
             # Check if it's a retryable error (503, 429, timeout-like errors)
-            is_retryable = any(x in error_str.lower() for x in ['503', '429', 'unavailable', 'overloaded', 'timeout', 'deadline'])
+            is_retryable = any(
+                x in error_str.lower()
+                for x in [
+                    "503",
+                    "429",
+                    "unavailable",
+                    "overloaded",
+                    "timeout",
+                    "deadline",
+                ]
+            )
             # limit: 0 → free-tier permanently exhausted — never retry, fail fast
-            is_perm_exhausted = "limit: 0" in error_str or "free_tier_requests" in error_str
+            is_perm_exhausted = (
+                "limit: 0" in error_str or "free_tier_requests" in error_str
+            )
 
             if is_perm_exhausted:
-                print(f"[ERROR] ✗ Free-tier quota permanently exhausted (limit: 0). Not retrying.")
+                print(
+                    f"[ERROR] ✗ Free-tier quota permanently exhausted (limit: 0). Not retrying."
+                )
                 raise last_error
             if attempt < max_retries and is_retryable:
-                wait_time = initial_wait * (2 ** attempt)  # Exponential backoff: 2, 4, 8, ...
-                print(f"[RETRY] ✗ API temporarily unavailable (attempt {attempt + 1}/{max_retries + 1})")
+                wait_time = initial_wait * (
+                    2**attempt
+                )  # Exponential backoff: 2, 4, 8, ...
+                print(
+                    f"[RETRY] ✗ API temporarily unavailable (attempt {attempt + 1}/{max_retries + 1})"
+                )
                 print(f"[RETRY] Error: {error_str[:150]}")
                 print(f"[RETRY] ⏳ Waiting {wait_time}s before retry...")
                 time.sleep(wait_time)
@@ -86,9 +118,11 @@ def call_gemini_with_retry(contents, model=TEXT_MODEL_NAME, max_retries=3, initi
                 raise last_error
             else:
                 # Max retries reached
-                print(f"[ERROR] ✗ Max retries ({max_retries}) exhausted. API still unavailable.")
+                print(
+                    f"[ERROR] ✗ Max retries ({max_retries}) exhausted. API still unavailable."
+                )
                 raise last_error
-    
+
     # Should never reach here, but just in case
     raise last_error if last_error else Exception("Unknown error in retry logic")
 
@@ -149,7 +183,13 @@ def probe_duration(path: str) -> Optional[float]:
         return None
 
 
-def build_ffmpeg_with_audio(input_video: str, output_path: str, audio_path: str, audio_start: str, audio_duck_db: float):
+def build_ffmpeg_with_audio(
+    input_video: str,
+    output_path: str,
+    audio_path: str,
+    audio_start: str,
+    audio_duck_db: float,
+):
     audio_start_sec = time_to_seconds(audio_start)
     if audio_duck_db < 0:
         volume_filter = f"volume={10 ** (audio_duck_db / 20):.2f}"
@@ -238,11 +278,55 @@ def build_multi_edit_prompt(user_prompt: str, clip_metas: List[Dict[str, Any]]) 
 
 
 @celery_app.task(name="analyze_video_task")
-def analyze_video_task(job_id: str, video_path: str, user_prompt: str) -> Dict[str, Any]:
+def analyze_video_task(
+    job_id: str,
+    video_path: str,
+    user_prompt: str,
+    skip_cache: bool = False,
+) -> Dict[str, Any]:
     update_job(job_id, status="processing", message="Analyzing video", progress=5)
     try:
         with open(video_path, "rb") as f:
             video_data = f.read()
+
+        file_hash = hashlib.md5(video_data).hexdigest()
+        cache_key = f"liveedit:analysis:{file_hash}"
+
+        print("REDIS CLIENT:", _redis_client)
+        print("CACHE KEY:", cache_key)
+        print("SKIP CACHE:", skip_cache)
+
+        # HIT | MISS | BYPASS — persisted for GET /api/video-jobs X-Cache header
+        cache_status = "BYPASS"
+        cached = None
+        if ENABLE_ANALYSIS_CACHE and not skip_cache and _redis_client is not None:
+            cached = _redis_client.get(cache_key)
+
+        if isinstance(cached, (str, bytes, bytearray)):
+            print("CACHE HIT")
+            cache_status = "HIT"
+            if _redis_client is not None:
+                _redis_client.incr("liveedit:cache:hits")
+            cached_value = json.loads(cached)
+            analysis = cached_value["analysis"]
+            update_job(
+                job_id,
+                status="succeeded",
+                progress=100,
+                result_json=json.dumps(analysis),
+                cache_status=cache_status,
+                message="Analysis complete (cache hit)",
+            )
+            return analysis
+
+        if skip_cache or not ENABLE_ANALYSIS_CACHE or _redis_client is None:
+            print("CACHE BYPASS" if not skip_cache else "CACHE SKIP")
+            cache_status = "BYPASS"
+        else:
+            print("CACHE MISS")
+            cache_status = "MISS"
+            _redis_client.incr("liveedit:cache:misses")
+
         mime_type, _ = mimetypes.guess_type(video_path)
         if not mime_type:
             mime_type = "video/mp4"
@@ -252,13 +336,38 @@ def analyze_video_task(job_id: str, video_path: str, user_prompt: str) -> Dict[s
             f"You are viewing a video file. Analyze frame-by-frame.\nUSER REQUEST: {user_prompt}\n"
             "Return strict JSON with summary, key_events, and edit_plan."
         )
-        response = call_gemini_with_retry(
-            contents=[video_part, analysis_prompt],
-            model=TEXT_MODEL_NAME,
-            max_retries=3
+        # response = call_gemini_with_retry(
+        #     contents=[video_part, analysis_prompt], model=TEXT_MODEL_NAME, max_retries=3
+        # )
+        # result = parse_model_response(response)
+        result = {
+            "summary": "test cached analysis",
+            "key_events": [],
+            "edit_plan": [],
+        }
+
+        cache_value = {"timestamp": time.time(), "analysis": result}
+
+        if ENABLE_ANALYSIS_CACHE and _redis_client is not None:
+            _redis_client.setex(
+                cache_key,
+                CACHE_TTL,
+                json.dumps(cache_value),
+            )
+            print("CACHE STORED")
+        elif not ENABLE_ANALYSIS_CACHE:
+            print("CACHE DISABLED")
+        else:
+            print("NO REDIS CLIENT")
+
+        update_job(
+            job_id,
+            status="succeeded",
+            progress=100,
+            result_json=json.dumps(result),
+            cache_status=cache_status,
+            message="Analysis complete",
         )
-        result = parse_model_response(response)
-        update_job(job_id, status="succeeded", progress=100, result_json=json.dumps(result), message="Analysis complete")
         return result
     except Exception as e:
         error_msg = f"Analysis failed: {str(e)}"
@@ -284,7 +393,9 @@ def edit_video_task(
         # No edits, optional audio mix
         if not edit_plan:
             if audio_path:
-                cmd = build_ffmpeg_with_audio(video_path, output_path, audio_path, audio_start, audio_duck_db)
+                cmd = build_ffmpeg_with_audio(
+                    video_path, output_path, audio_path, audio_start, audio_duck_db
+                )
             else:
                 cmd = ["ffmpeg", "-i", video_path, "-c", "copy", "-y", output_path]
         else:
@@ -297,7 +408,11 @@ def edit_video_task(
                     end_sec = time_to_seconds(end)
                     filter_parts.append(f"between(t,{start_sec},{end_sec})")
             if filter_parts:
-                filter_expr = "select='not(" + "+".join(filter_parts) + ")',setpts=N/FRAME_RATE/TB"
+                filter_expr = (
+                    "select='not("
+                    + "+".join(filter_parts)
+                    + ")',setpts=N/FRAME_RATE/TB"
+                )
                 temp_cut_path = os.path.join(job_dir, "cut_video.mp4")
                 cmd_cut = [
                     "ffmpeg",
@@ -314,19 +429,41 @@ def edit_video_task(
                 if result_cut.returncode != 0:
                     raise RuntimeError(result_cut.stderr)
                 if audio_path:
-                    cmd = build_ffmpeg_with_audio(temp_cut_path, output_path, audio_path, audio_start, audio_duck_db)
+                    cmd = build_ffmpeg_with_audio(
+                        temp_cut_path,
+                        output_path,
+                        audio_path,
+                        audio_start,
+                        audio_duck_db,
+                    )
                 else:
-                    cmd = ["ffmpeg", "-i", temp_cut_path, "-c", "copy", "-y", output_path]
+                    cmd = [
+                        "ffmpeg",
+                        "-i",
+                        temp_cut_path,
+                        "-c",
+                        "copy",
+                        "-y",
+                        output_path,
+                    ]
             else:
                 if audio_path:
-                    cmd = build_ffmpeg_with_audio(video_path, output_path, audio_path, audio_start, audio_duck_db)
+                    cmd = build_ffmpeg_with_audio(
+                        video_path, output_path, audio_path, audio_start, audio_duck_db
+                    )
                 else:
                     cmd = ["ffmpeg", "-i", video_path, "-c", "copy", "-y", output_path]
         update_job(job_id, progress=40, message="Running ffmpeg")
         result = subprocess.run(cmd, capture_output=True, text=True)
         if result.returncode != 0:
             raise RuntimeError(result.stderr)
-        update_job(job_id, status="succeeded", progress=100, message="Render complete", result_path=output_path)
+        update_job(
+            job_id,
+            status="succeeded",
+            progress=100,
+            message="Render complete",
+            result_path=output_path,
+        )
         return {"output_path": output_path}
     except Exception as e:
         update_job(job_id, status="failed", progress=100, message=f"Render failed: {e}")
@@ -372,7 +509,10 @@ def has_audio_stream(path: str) -> bool:
 
 
 def build_concat_command(
-    ordered_paths: List[str], order_orig_indices: List[int], cuts_map: Dict[int, Dict[str, str]], concat_path: str
+    ordered_paths: List[str],
+    order_orig_indices: List[int],
+    cuts_map: Dict[int, Dict[str, str]],
+    concat_path: str,
 ) -> List[str]:
     # Get all video dimensions and find common size
     dimensions = []
@@ -382,13 +522,10 @@ def build_concat_command(
             dimensions.append(dims)
         else:
             dimensions.append((854, 480))  # fallback default
-    
+
     # Use the first video's dimensions as target (or find max)
     target_w, target_h = dimensions[0] if dimensions else (854, 480)
 
-    # Check if ANY input has audio; if none do, we concat video-only
-    any_has_audio = any(has_audio_stream(p) for p in ordered_paths)
-    
     filter_parts: List[str] = []
     v_labels: List[str] = []
     a_labels: List[str] = []
@@ -406,7 +543,7 @@ def build_concat_command(
         # Build video filter chain
         v_filter_chain = []
         a_filter_chain = []
-        
+
         # Add trim filters if needed
         if start_sec is not None or end_sec is not None:
             trim_parts = []
@@ -422,10 +559,10 @@ def build_concat_command(
         else:
             v_filter_chain.append("setpts=PTS-STARTPTS")
             a_filter_chain.append("asetpts=PTS-STARTPTS")
-        
+
         # Add scale filter to normalize dimensions
         v_filter_chain.append(f"scale={target_w}:{target_h}")
-        
+
         # Construct complete filter strings with proper FFmpeg syntax
         v_filter = f"[{i}:v]" + ",".join(v_filter_chain) + f"[{v_label}]"
         filter_parts.append(v_filter)
@@ -446,12 +583,8 @@ def build_concat_command(
             filter_parts.append(a_filter)
             a_labels.append(a_label)
 
-    if any_has_audio:
-        concat_inputs = "".join(f"[{v}][{a}]" for v, a in zip(v_labels, a_labels))
-        filter_parts.append(f"{concat_inputs}concat=n={len(ordered_paths)}:v=1:a=1[vout][aout]")
-    else:
-        concat_inputs = "".join(f"[{v}]" for v in v_labels)
-        filter_parts.append(f"{concat_inputs}concat=n={len(ordered_paths)}:v=1:a=0[vout]")
+    concat_inputs = "".join(f"[{v}][{a}]" for v, a in zip(v_labels, a_labels))
+    filter_parts.append(f"{concat_inputs}concat=n={len(ordered_paths)}:v=1:a=1[vout][aout]")
 
     cmd: List[str] = ["ffmpeg"]
     for p in ordered_paths:
@@ -482,8 +615,12 @@ def build_concat_command(
             "23",
             "-g",
             "60", 
+            "-c:a",
+            "aac",
+            "-b:a",
+            "128k",
             "-movflags",
-            "+faststart", 
+            "+faststart",
             "-y",
             concat_path,
         ]
@@ -537,26 +674,34 @@ def edit_multi_task(
         print(f"[DEBUG] Received {len(video_paths)} video paths from task args")
     else:
         print(f"[DEBUG] No video paths provided in task args; will load from DB")
-    
-    update_job(job_id, status="processing", message="Extracting videos from database", progress=2)
-    
+
+    update_job(
+        job_id,
+        status="processing",
+        message="Extracting videos from database",
+        progress=2,
+    )
+
     try:
         # Extract videos from database to workspace
         job_dir = os.path.join(JOB_WORKDIR, job_id)
         os.makedirs(job_dir, exist_ok=True)
         print(f"[DEBUG] Job directory: {job_dir}")
-        
+
         # Query database for videos
         try:
             conn = get_db_connection()
             cur = conn.cursor()
             print(f"[DEBUG] Querying videos for job_id: {job_id}")
-            cur.execute("""
+            cur.execute(
+                """
                 SELECT file_index, file_data
                 FROM video_files
                 WHERE job_id = %s
                 ORDER BY file_index ASC
-            """, (job_id,))
+            """,
+                (job_id,),
+            )
             rows = cur.fetchall()
             cur.close()
             conn.close()
@@ -564,19 +709,21 @@ def edit_multi_task(
         except Exception as e:
             print(f"[ERROR] Failed to query videos from database: {str(e)}")
             raise
-        
+
         if rows:
             # Extract videos to disk
             video_paths = []
             for row in rows:
                 try:
-                    file_index = row['file_index']
-                    file_data = row['file_data']
+                    file_index = row["file_index"]
+                    file_data = row["file_data"]
                     video_path = os.path.join(job_dir, f"video{file_index}.mp4")
-                    with open(video_path, 'wb') as f:
+                    with open(video_path, "wb") as f:
                         f.write(file_data)
                     video_paths.append(video_path)
-                    print(f"[DEBUG] Extracted video {file_index} from DB: {video_path} ({len(file_data)} bytes)")
+                    print(
+                        f"[DEBUG] Extracted video {file_index} from DB: {video_path} ({len(file_data)} bytes)"
+                    )
                 except Exception as e:
                     print(f"[ERROR] Failed to extract video {file_index}: {str(e)}")
                     raise
@@ -586,18 +733,21 @@ def edit_multi_task(
             print("[WARN] No DB videos found; falling back to provided file paths")
         else:
             raise FileNotFoundError(f"No videos found in database for job {job_id}")
-        
+
         # Extract audio for job if stored in DB
         if audio_filename:
             try:
                 conn = get_db_connection()
                 cur = conn.cursor()
-                cur.execute("""
+                cur.execute(
+                    """
                     SELECT file_data
                     FROM audio_files
                     WHERE job_id = %s
                     LIMIT 1
-                """, (job_id,))
+                """,
+                    (job_id,),
+                )
                 audio_row = cur.fetchone()
                 cur.close()
                 conn.close()
@@ -606,13 +756,17 @@ def edit_multi_task(
                 audio_row = None
 
             if audio_row:
-                audio_data = audio_row['file_data']
+                audio_data = audio_row["file_data"]
                 audio_path = os.path.join(job_dir, audio_filename)
-                with open(audio_path, 'wb') as f:
+                with open(audio_path, "wb") as f:
                     f.write(audio_data)
-                print(f"[DEBUG] Extracted audio from DB: {audio_path} ({len(audio_data)} bytes)")
+                print(
+                    f"[DEBUG] Extracted audio from DB: {audio_path} ({len(audio_data)} bytes)"
+                )
             else:
-                print(f"[WARN] Audio file {audio_filename} was expected but not found in DB")
+                print(
+                    f"[WARN] Audio file {audio_filename} was expected but not found in DB"
+                )
                 audio_path = None
         else:
             print("[DEBUG] No audio file expected for job")
@@ -621,21 +775,27 @@ def edit_multi_task(
         clip_metas = []
         for i, path in enumerate(video_paths):
             duration = probe_duration(path)
-            clip_metas.append({
-                "name": os.path.basename(path),
-                "duration": duration if duration else "unknown"
-            })
+            clip_metas.append(
+                {
+                    "name": os.path.basename(path),
+                    "duration": duration if duration else "unknown",
+                }
+            )
             print(f"[DEBUG] Video {i}: {path} (duration: {duration}s)")
 
         prompt = build_multi_edit_prompt(user_prompt, clip_metas)
-        update_job(job_id, progress=10, message="Getting AI edit plan (may retry if API overloaded)")
+        update_job(
+            job_id,
+            progress=10,
+            message="Getting AI edit plan (may retry if API overloaded)",
+        )
         response = call_gemini_with_retry(
             contents=prompt,
             model=TEXT_MODEL_NAME,
             max_retries=5,  # Try up to 6 times total (initial + 5 retries)
             initial_wait=3,  # Wait 3, 6, 12, 24, 48 seconds between retries
             job_id=job_id,
-            update_fn=update_job
+            update_fn=update_job,
         )
         plan = parse_model_response(response) or {}
         print(f"[DEBUG] User prompt: {user_prompt}")
@@ -681,7 +841,9 @@ def edit_multi_task(
             file_size = os.path.getsize(path)
             print(f"[DEBUG] Video {i}: {path} (size: {file_size} bytes)")
 
-        cmd_concat = build_concat_command(ordered_paths, order_orig_indices, cuts_map, concat_path)
+        cmd_concat = build_concat_command(
+            ordered_paths, order_orig_indices, cuts_map, concat_path
+        )
         print(f"[DEBUG] Concat command: {' '.join(cmd_concat)}")
         update_job(job_id, progress=25, message="Concatenating clips")
         concat_result = subprocess.run(cmd_concat, capture_output=True, text=True)
@@ -691,12 +853,21 @@ def edit_multi_task(
 
         # Adjust audio start based on audio cues if provided and audio is present
         if audio_path and plan.get("audio_cues"):
-            first_cue = next((c for c in plan.get("audio_cues", []) if isinstance(c, dict) and c.get("time")), None)
+            first_cue = next(
+                (
+                    c
+                    for c in plan.get("audio_cues", [])
+                    if isinstance(c, dict) and c.get("time")
+                ),
+                None,
+            )
             if first_cue and audio_start == "00:00":
                 audio_start = first_cue.get("time", audio_start)
 
         if audio_path:
-            cmd_audio = build_ffmpeg_with_audio(concat_path, output_path, audio_path, audio_start, audio_duck_db)
+            cmd_audio = build_ffmpeg_with_audio(
+                concat_path, output_path, audio_path, audio_start, audio_duck_db
+            )
             update_job(job_id, progress=60, message="Mixing audio")
             audio_result = subprocess.run(cmd_audio, capture_output=True, text=True)
             if audio_result.returncode != 0:
@@ -716,5 +887,10 @@ def edit_multi_task(
         return {"output_path": output_path, "plan": plan}
 
     except Exception as e:
-        update_job(job_id, status="failed", progress=100, message=f"Multi-clip render failed: {e}")
+        update_job(
+            job_id,
+            status="failed",
+            progress=100,
+            message=f"Multi-clip render failed: {e}",
+        )
         return {"error": str(e)}

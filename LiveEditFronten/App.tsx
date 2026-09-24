@@ -41,6 +41,7 @@ const App: React.FC = () => {
   const [currentProjectId, setCurrentProjectId] = useState<string | null>(null);
 
   const { subscription, refetch: refetchSubscription } = useSubscription(userEmail);
+  const { theme, toggleTheme } = useTheme();
 
   useEffect(() => {
     const authToken = localStorage.getItem('authToken');
@@ -220,6 +221,13 @@ const App: React.FC = () => {
             className="px-3 py-1.5 text-[9px] font-bold uppercase tracking-widest text-neutral-500 hover:text-[#00ff41] transition-all border border-neutral-800 hover:border-[#00ff41]"
           >
             Logout
+          </button>
+          <button
+            onClick={toggleTheme}
+            className="px-3 py-1.5 text-[9px] font-bold uppercase tracking-widest text-neutral-500 hover:text-[#00ff41] transition-all border border-neutral-800 hover:border-[#00ff41]"
+            title={`Switch to ${theme === 'dark' ? 'light' : 'dark'} mode`}
+          >
+            {theme === 'dark' ? '☀' : '☾'}
           </button>
         </div>
       </header>
