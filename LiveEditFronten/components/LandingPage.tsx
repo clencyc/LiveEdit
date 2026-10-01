@@ -1,6 +1,4 @@
 import React, { useEffect, useState } from 'react';
-import AnimatedBackground from './AnimatedBackground';
-import ProductHuntLaunchTimer from './ProductHuntLaunchTimer';
 
 interface LandingPageProps {
   onStart: () => void;
@@ -52,30 +50,67 @@ const LandingPage: React.FC<LandingPageProps> = ({ onStart }) => {
 
       <div className="absolute inset-0 bg-gradient-to-b from-black via-transparent to-black" />
 
-      <header className="relative z-10 flex items-center justify-between px-10 pt-8">
-        <div className="flex items-center gap-3">
-          <div className="w-9 h-9 rounded-full bg-[#00ff41] flex items-center justify-center shadow-[0_0_40px_rgba(0,255,65,0.35)]">
-            <i className="fas fa-play text-black text-xs" />
-          </div>
-          <div>
-            <div className="text-sm uppercase tracking-[0.3em] text-neutral-400">Live Edit</div>
-            <div className="text-lg font-bold text-white tracking-tight">AI Video Editor</div>
+      <header className="relative z-10 pt-6 px-4">
+        <div className="mx-auto max-w-6xl rounded-2xl border border-[#3b2d44] bg-[#201b2d]/90 shadow-[0_8px_30px_rgba(14,10,22,0.7)] backdrop-blur-sm">
+          <div className="flex items-center justify-between gap-4 px-5 py-4">
+            <div className="flex items-center gap-3 min-w-0">
+              <div className="w-9 h-9 rounded-full bg-[#00ff41] flex items-center justify-center shadow-[0_0_40px_rgba(0,255,65,0.35)] shrink-0">
+                <i className="fas fa-play text-black text-xs" />
+              </div>
+              <div className="min-w-0">
+                <div className="text-[11px] uppercase tracking-[0.3em] text-neutral-400">Live Edit</div>
+                <div className="text-lg font-bold text-white tracking-tight truncate">AI Video Editor</div>
+              </div>
+            </div>
+
+            <nav className="hidden md:flex items-center gap-8 text-sm font-medium text-neutral-200">
+              {[
+                { label: 'Home', href: '#top' },
+                { label: 'Hall of Fame', href: '#hall-of-fame' },
+                { label: 'Blog', href: '#blog' },
+                { label: 'Demo', href: '#demo' },
+              ].map((item) => (
+                <a
+                  key={item.label}
+                  href={item.href}
+                  className="transition-colors hover:text-[#00ff41]"
+                >
+                  {item.label}
+                </a>
+              ))}
+            </nav>
+
+            <div className="flex items-center gap-3 ml-auto">
+              <button
+                onClick={onStart}
+                className="hidden sm:inline-flex px-4 py-2 bg-[#00ff41] text-black font-bold uppercase text-[10px] tracking-[0.25em] shadow-[0_10px_40px_rgba(0,255,65,0.45)] hover:bg-[#00e03a] transition-all"
+              >
+                Get Started
+              </button>
+              <a
+                href="https://github.com/sponsors/clencyc"
+                target="_blank"
+                rel="noreferrer"
+                className="inline-flex items-center gap-2 rounded-xl border border-[#00ff41] bg-[#00ff41]/10 px-4 py-2 text-[11px] font-bold uppercase tracking-[0.25em] text-[#00ff41] hover:bg-[#00ff41]/20 transition-all"
+              >
+                <span aria-hidden="true">♥</span>
+                Sponsor
+              </a>
+              <a
+                href="https://github.com/clencyc/LiveEdit"
+                target="_blank"
+                rel="noreferrer"
+                className="inline-flex items-center gap-2 rounded-xl border border-neutral-700 bg-[#0d0d0d] px-4 py-2 text-[11px] font-bold uppercase tracking-[0.25em] text-white hover:border-[#00ff41] hover:text-[#00ff41] transition-all"
+              >
+                <i className="fab fa-github" />
+                GitHub
+              </a>
+            </div>
           </div>
         </div>
-        <button
-          onClick={onStart}
-          className="px-6 py-2 bg-[#00ff41] text-black font-bold uppercase text-[11px] tracking-[0.25em] shadow-[0_10px_40px_rgba(0,255,65,0.45)] hover:bg-[#00e03a] transition-all"
-        >
-          Get Started
-        </button>
       </header>
 
-      <main className="relative z-20 flex flex-col items-center text-center px-6 mt-16 pb-40">
-        {/* Product Hunt Launch Timer */}
-        <div className="mb-12 w-full">
-          <ProductHuntLaunchTimer />
-        </div>
-
+      <main id="top" className="relative z-20 flex flex-col items-center text-center px-6 mt-16 pb-20">
         <div className="inline-flex items-center gap-2 px-4 py-2 border border-[#00ff41] bg-white/5 text-[11px] uppercase tracking-[0.35em] text-[#00ff41]">
           AI VIDEO EDITING
         </div>
@@ -107,8 +142,64 @@ const LandingPage: React.FC<LandingPageProps> = ({ onStart }) => {
 
       </main>
 
+      <section id="hall-of-fame" className="relative z-20 px-6 py-20 border-t border-neutral-800">
+        <div className="max-w-6xl mx-auto">
+          <div className="text-center mb-12">
+            <div className="inline-flex items-center gap-2 px-4 py-2 border border-[#00ff41] bg-white/5 text-[11px] uppercase tracking-[0.35em] text-[#00ff41] mb-6">
+              👥 Community
+            </div>
+            <h2 className="text-4xl font-bold text-white mb-3">Contributors Hall of Fame</h2>
+            <p className="text-neutral-400 text-sm uppercase tracking-[0.25em]">People shaping the next iteration of Live Edit</p>
+          </div>
+
+          <div className="grid md:grid-cols-3 gap-6">
+            {[
+              { name: 'C.Christine', role: 'Founder & creative technologist', blurb: 'Built the initial prototype, creative direction, and product vision.' },
+              { name: 'Community Beta Testers', role: 'Early adopters', blurb: 'Feedback from real editors helped shape the editing workflow and prompt system.' },
+              { name: 'Open contributors', role: 'Design + engineering', blurb: 'Future collaborators and builders who help improve the product and writing.' },
+            ].map((person, i) => (
+              <div key={i} className="rounded-xl border border-neutral-800 bg-white/[0.03] p-5 hover:border-[#00ff41] transition-all">
+                <div className="w-12 h-12 rounded-full bg-[#00ff41] text-black font-bold flex items-center justify-center mb-4 shadow-[0_0_30px_rgba(0,255,65,0.25)]">
+                  {person.name.split(' ').map((part) => part[0]).slice(0, 2).join('').toUpperCase()}
+                </div>
+                <div className="text-lg font-semibold text-white">{person.name}</div>
+                <div className="mt-1 text-[11px] uppercase tracking-[0.2em] text-[#00ff41]">{person.role}</div>
+                <p className="mt-4 text-sm text-neutral-400 leading-relaxed">{person.blurb}</p>
+              </div>
+            ))}
+          </div>
+        </div>
+      </section>
+
+      <section id="blog" className="relative z-20 px-6 py-20 border-t border-neutral-800 bg-[#0a0a0a]">
+        <div className="max-w-6xl mx-auto">
+          <div className="text-center mb-12">
+            <div className="inline-flex items-center gap-2 px-4 py-2 border border-[#00ff41] bg-white/5 text-[11px] uppercase tracking-[0.35em] text-[#00ff41] mb-6">
+              ✍️ Writing
+            </div>
+            <h2 className="text-4xl font-bold text-white mb-3">Blog & Notes</h2>
+            <p className="text-neutral-400 text-sm uppercase tracking-[0.25em]">Thoughts on AI, creative tooling, and the product journey</p>
+          </div>
+
+          <div className="grid md:grid-cols-3 gap-6">
+            {[
+              { title: 'Building with AI as a creative partner', date: 'Coming soon', summary: 'A look at designing workflows that keep human taste in the loop.' },
+              { title: 'Why editing is still storytelling', date: 'Coming soon', summary: 'Notes on craft, pacing, and how AI can accelerate the process without flattening voice.' },
+              { title: 'Inside the Live Edit workflow', date: 'Coming soon', summary: 'A practical breakdown of the systems behind prompt-driven video production.' },
+            ].map((post, i) => (
+              <article key={i} className="rounded-xl border border-neutral-800 bg-black/40 p-5 hover:border-[#00ff41] transition-all group">
+                <div className="text-[10px] uppercase tracking-[0.25em] text-neutral-500 mb-3">{post.date}</div>
+                <h3 className="text-xl font-semibold text-white group-hover:text-[#00ff41] transition-colors">{post.title}</h3>
+                <p className="mt-4 text-sm text-neutral-400 leading-relaxed">{post.summary}</p>
+                <div className="mt-6 text-[11px] uppercase tracking-[0.2em] text-[#00ff41]">Read article →</div>
+              </article>
+            ))}
+          </div>
+        </div>
+      </section>
+
       {/* Demo Video Section */}
-      <section className="relative z-20 px-6 py-20 border-t border-neutral-800">
+      <section id="demo" className="relative z-20 px-6 py-20 border-t border-neutral-800">
         <div className="max-w-6xl mx-auto">
           <div className="text-center mb-12">
             <div className="inline-flex items-center gap-2 px-4 py-2 border border-[#00ff41] bg-white/5 text-[11px] uppercase tracking-[0.35em] text-[#00ff41] mb-6">
