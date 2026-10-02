@@ -1,10 +1,9 @@
-
 import { GoogleGenAI } from "@google/genai";
 import { VideoConfig } from "../types";
 import { BACKEND_URL } from './api';
 
-// Note: process.env.API_KEY is pre-configured
-export const getAiClient = () => new GoogleGenAI({ apiKey: import.meta.env.VITE_GEMINI_API_KEY });
+// Note: API key is now handled server-side via backend proxy
+export const getAiClient = () => new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY });
 
 export async function generateAiVideo(config: VideoConfig, onProgress?: (msg: string) => void) {
   const ai = getAiClient();
@@ -32,7 +31,11 @@ export async function generateAiVideo(config: VideoConfig, onProgress?: (msg: st
   const downloadLink = operation.response?.generatedVideos?.[0]?.video?.uri;
   if (!downloadLink) throw new Error("Video generation failed - no URI returned");
 
-  const response = await fetch(`${downloadLink}&key=${import.meta.env.VITE_GEMINI_API_KEY}`);
+  const response = await fetch(`${BACKEND_URL}/api/download-video`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ downloadLink })
+  });
   const blob = await response.blob();
   return URL.createObjectURL(blob);
 }
