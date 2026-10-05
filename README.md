@@ -1,4 +1,4 @@
-# LiveEdit - AI-Powered Video Editor
+# LiveEdit - AI-Powered Video Editor v1
 
 A full-stack application combining React frontend with Python backend for AI-driven video analysis and editing.
 https://live-edit-eight.vercel.app/
