@@ -3,7 +3,7 @@ import React, { useState, useRef, useEffect } from 'react';
 import { getAiClient, chatWithBackend, analyzeVideoWithBackend, editVideoWithBackend } from '../services/gemini';
 import { ChatMessage, MediaAsset } from '../types';
 import CreativePulse from './CreativePulse';
-import { requireBackendUrl } from '../services/api';
+import { apiFetch, requireBackendUrl } from '../services/api';
 
 interface ChatInterfaceProps {
   onAddAsset: (asset: MediaAsset) => void
@@ -91,7 +91,7 @@ const ChatInterface: React.FC<ChatInterfaceProps> = ({ onAddAsset }) => {
 
   useEffect(() => {
     // Fetch audio library from backend
-    fetch(`${requireBackendUrl()}/api/audio-effects`, {
+    apiFetch(`${requireBackendUrl()}/api/audio-effects`, {
       credentials: 'include'
     })
       .then(res => res.json())
@@ -109,7 +109,7 @@ const ChatInterface: React.FC<ChatInterfaceProps> = ({ onAddAsset }) => {
 
   const loadAudioLibrary = async () => {
     try {
-      const response = await fetch(`${requireBackendUrl()}/api/audio-effects`, {
+      const response = await apiFetch(`${requireBackendUrl()}/api/audio-effects`, {
         credentials: 'include'
       });
       const data = await response.json();
@@ -134,7 +134,7 @@ const ChatInterface: React.FC<ChatInterfaceProps> = ({ onAddAsset }) => {
     setIsImporting(true);
     try {
       const backendUrl = requireBackendUrl();
-      const response = await fetch(`${backendUrl}/api/audio-effects/import`, {
+      const response = await apiFetch(`${backendUrl}/api/audio-effects/import`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
@@ -317,7 +317,7 @@ const ChatInterface: React.FC<ChatInterfaceProps> = ({ onAddAsset }) => {
         const selectedPreset = audioLibrary.find(a => a.id === selectedAudioId);
         if (selectedPreset) {
           const backendUrl = requireBackendUrl();
-          const audioResponse = await fetch(`${backendUrl}/api/audio-effects/${selectedPreset.filename}`, {
+          const audioResponse = await apiFetch(`${backendUrl}/api/audio-effects/${selectedPreset.filename}`, {
             credentials: 'include'
           });
           const audioBlob = await audioResponse.blob();

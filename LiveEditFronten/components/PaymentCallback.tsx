@@ -1,7 +1,7 @@
 import React, { useEffect, useState } from 'react';
 import { motion } from 'framer-motion';
 import { useNavigate, useSearchParams } from 'react-router-dom';
-import { requireBackendUrl } from '../services/api';
+import { apiFetch, requireBackendUrl } from '../services/api';
 
 export const PaymentCallback: React.FC = () => {
   const [searchParams] = useSearchParams();
@@ -23,7 +23,7 @@ export const PaymentCallback: React.FC = () => {
 
   const verifyPayment = async (reference: string) => {
     try {
-      const response = await fetch(`${requireBackendUrl()}/api/payments/verify/${reference}`, {
+      const response = await apiFetch(`${requireBackendUrl()}/api/payments/verify/${reference}`, {
         credentials: 'include'
       });
       const data = await response.json();

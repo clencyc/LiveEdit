@@ -1,5 +1,5 @@
 import { useState, useEffect } from 'react';
-import { requireBackendUrl } from '../services/api';
+import { apiFetch, requireBackendUrl } from '../services/api';
 
 interface Subscription {
   status: string;
@@ -55,8 +55,8 @@ export const useSubscription = (userEmail: string | null): UseSubscriptionResult
 
     try {
       setLoading(true);
-      const response = await fetch(
-        `${requireBackendUrl()}/api/user/subscription?email=${encodeURIComponent(userEmail)}`,
+      const response = await apiFetch(
+        `${requireBackendUrl()}/api/user/subscription`,
         {
           credentials: 'include'
         }

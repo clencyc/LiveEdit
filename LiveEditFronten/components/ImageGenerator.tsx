@@ -1,6 +1,6 @@
 import React, { useState } from 'react';
 import { MediaAsset } from '../types';
-import { requireBackendUrl } from '../services/api';
+import { apiFetch, requireBackendUrl } from '../services/api';
 
 interface ImageGeneratorProps {
   onAddAsset: (asset: MediaAsset) => void;
@@ -21,7 +21,7 @@ const ImageGenerator: React.FC<ImageGeneratorProps> = ({ onAddAsset }) => {
     setError(null);
 
     try {
-      const response = await fetch(`${requireBackendUrl()}/api/generate-image`, {
+      const response = await apiFetch(`${requireBackendUrl()}/api/generate-image`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',

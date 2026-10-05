@@ -1,6 +1,6 @@
 import React, { useEffect, useState } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
-import { requireBackendUrl } from '../services/api';
+import { apiFetch, requireBackendUrl } from '../services/api';
 
 interface PaymentModalProps {
   isOpen: boolean;
@@ -28,16 +28,13 @@ export const PaymentModal: React.FC<PaymentModalProps> = ({
 
     try {
       // Initialize payment
-      const response = await fetch(`${requireBackendUrl()}/api/payments/initialize`, {
+      const response = await apiFetch(`${requireBackendUrl()}/api/payments/initialize`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
         },
         credentials: 'include',
-        body: JSON.stringify({
-          email: userEmail,
-          plan_id: planId
-        })
+        body: JSON.stringify({ plan_id: planId })
       });
 
       if (!response.ok) {

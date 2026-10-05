@@ -3,7 +3,7 @@
  * =======================
  * Frontend API client for the Video Ingestion & Understanding backend.
  */
-import { BACKEND_URL } from './api';
+import { apiFetch, BACKEND_URL } from './api';
 
 export interface VideoAnalysis {
   duration_estimate?: string;
@@ -139,7 +139,7 @@ export async function uploadForIngestion(
 
   options.onProgress?.("Uploading video for AI analysis…");
 
-  const response = await fetch(`${BACKEND_URL}/api/video-ingestion/upload`, {
+  const response = await apiFetch(`${BACKEND_URL}/api/video-ingestion/upload`, {
     method: "POST",
     body: formData,
   });
@@ -174,7 +174,7 @@ export async function queryVideo(
   geminiFileUri: string,
   prompt: string
 ): Promise<QueryResult> {
-  const response = await fetch(`${BACKEND_URL}/api/video-ingestion/query`, {
+  const response = await apiFetch(`${BACKEND_URL}/api/video-ingestion/query`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ gemini_file_uri: geminiFileUri, prompt }),
@@ -196,7 +196,7 @@ export async function getSceneSummary(
   start: string,
   end: string
 ): Promise<SceneSummaryResult> {
-  const response = await fetch(
+  const response = await apiFetch(
     `${BACKEND_URL}/api/video-ingestion/scene-summary`,
     {
       method: "POST",
@@ -217,7 +217,7 @@ export async function getSceneSummary(
  * List all uploaded video files still available in the current backend session.
  */
 export async function listUploadedFiles(): Promise<UploadedFile[]> {
-  const response = await fetch(`${BACKEND_URL}/api/video-ingestion/files`);
+  const response = await apiFetch(`${BACKEND_URL}/api/video-ingestion/files`);
   if (!response.ok) return [];
   const data = await response.json();
   return data.files || [];
@@ -232,7 +232,7 @@ export async function startDirectorSession(params: {
   analysis?: Record<string, any>;
   videoIntelligence?: Record<string, any>;
 }): Promise<DirectorSession> {
-  const response = await fetch(`${BACKEND_URL}/api/video-director/session/start`, {
+  const response = await apiFetch(`${BACKEND_URL}/api/video-director/session/start`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({
@@ -258,7 +258,7 @@ export async function directorInteract(
   sessionId: string,
   prompt: string
 ): Promise<DirectorInteractionResult> {
-  const response = await fetch(`${BACKEND_URL}/api/video-director/interaction`, {
+  const response = await apiFetch(`${BACKEND_URL}/api/video-director/interaction`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ session_id: sessionId, prompt }),
@@ -280,7 +280,7 @@ export async function generateDirectorPlan(
   creativeBrief: string,
   targetDurationSeconds?: number
 ): Promise<DirectorPlanResult> {
-  const response = await fetch(`${BACKEND_URL}/api/video-director/plan`, {
+  const response = await apiFetch(`${BACKEND_URL}/api/video-director/plan`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({
@@ -311,7 +311,7 @@ export async function renderDirectorPlan(
   formData.append("edit_plan", JSON.stringify(editPlan));
   if (audioFile) formData.append("audio_file", audioFile);
 
-  const response = await fetch(`${BACKEND_URL}/api/video-director/render`, {
+  const response = await apiFetch(`${BACKEND_URL}/api/video-director/render`, {
     method: "POST",
     body: formData,
   });

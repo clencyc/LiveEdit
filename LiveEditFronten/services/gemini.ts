@@ -1,7 +1,7 @@
 
 import { GoogleGenAI } from "@google/genai";
 import { VideoConfig } from "../types";
-import { BACKEND_URL } from './api';
+import { apiFetch, BACKEND_URL } from './api';
 
 // Note: process.env.API_KEY is pre-configured
 export const getAiClient = () => new GoogleGenAI({ apiKey: import.meta.env.VITE_GEMINI_API_KEY });
@@ -39,7 +39,7 @@ export async function generateAiVideo(config: VideoConfig, onProgress?: (msg: st
 
 export async function chatWithBackend(message: string): Promise<string> {
   try {
-    const response = await fetch(`${BACKEND_URL}/api/chat`, {
+    const response = await apiFetch(`${BACKEND_URL}/api/chat`, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
@@ -74,7 +74,7 @@ export async function analyzeVideoWithBackend(
     formData.append('video_file', videoFile);
     formData.append('prompt', prompt);
     
-    const response = await fetch(`${BACKEND_URL}/api/analyze-video`, {
+    const response = await apiFetch(`${BACKEND_URL}/api/analyze-video`, {
       method: 'POST',
       body: formData
     });
@@ -88,7 +88,7 @@ export async function analyzeVideoWithBackend(
       // Poll for completion
       while (true) {
         await new Promise(r => setTimeout(r, 2000));
-        const res = await fetch(`${BACKEND_URL}/api/video-jobs/${data.job_id}`);
+        const res = await apiFetch(`${BACKEND_URL}/api/video-jobs/${data.job_id}`);
         if (!res.ok) throw new Error('Failed to fetch job status');
         const jobData = await res.json();
         if (jobData.status === 'succeeded') return jobData.result_json as VideoAnalysisResult;
@@ -119,7 +119,7 @@ export async function editVideoWithBackend(
       formData.append('audio_duck_db', String(audioDuckDb || 0));
     }
 
-    const response = await fetch(`${BACKEND_URL}/api/edit-video`, {
+    const response = await apiFetch(`${BACKEND_URL}/api/edit-video`, {
       method: 'POST',
       body: formData
     });
@@ -139,7 +139,7 @@ export async function editVideoWithBackend(
 export async function generateImageWithBackend(prompt: string): Promise<{ dataUrl: string; mimeType: string; }>
 {
   const backendUrl = import.meta.env.VITE_BACKEND_URL || 'http://localhost:5000';
-  const response = await fetch(`${backendUrl}/api/generate-image`, {
+  const response = await apiFetch(`${backendUrl}/api/generate-image`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ prompt })
@@ -188,7 +188,7 @@ export async function queueMultiEdit(
     if (options.audioDuckDb !== undefined) formData.append('audio_duck_db', String(options.audioDuckDb));
   }
 
-  const res = await fetch(`${BACKEND_URL}/api/edit-multi`, {
+  const res = await apiFetch(`${BACKEND_URL}/api/edit-multi`, {
     method: 'POST',
     body: formData
   });
@@ -200,7 +200,7 @@ export async function queueMultiEdit(
 }
 
 export async function fetchVideoJob(jobId: string): Promise<VideoJobStatus> {
-  const res = await fetch(`${BACKEND_URL}/api/video-jobs/${jobId}`);
+  const res = await apiFetch(`${BACKEND_URL}/api/video-jobs/${jobId}`);
   if (!res.ok) {
     const err = await res.json().catch(() => ({}));
     throw new Error(err.error || res.statusText);
@@ -209,7 +209,7 @@ export async function fetchVideoJob(jobId: string): Promise<VideoJobStatus> {
 }
 
 export async function downloadVideoJob(jobId: string): Promise<Blob> {
-  const res = await fetch(`${BACKEND_URL}/api/video-jobs/${jobId}/download`);
+  const res = await apiFetch(`${BACKEND_URL}/api/video-jobs/${jobId}/download`);
   if (!res.ok) {
     const errText = await res.text();
     throw new Error(errText || res.statusText);

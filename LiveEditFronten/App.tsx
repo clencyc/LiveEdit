@@ -1,5 +1,6 @@
 
 import React, { useState, useEffect } from 'react';
+import { useLogto } from '@logto/react';
 import { AppMode, MediaAsset } from './types';
 import { useTheme } from './context/ThemeContext';
 import ChatInterface from './components/ChatInterface';
@@ -14,7 +15,7 @@ import { PaymentModal } from './components/PaymentModal';
 import { useSubscription } from './hooks/useSubscription';
 import ProjectsView from './components/ProjectsView';
 import WorkflowCanvas from './components/WorkflowCanvas';
-import { requireBackendUrl } from './services/api';
+import { apiFetch, requireBackendUrl, setAuthTokenGetter } from './services/api';
 
 declare global {
   interface AIStudio {
@@ -32,26 +33,63 @@ const App: React.FC = () => {
   const [isSidebarOpen] = useState(true);
   const [showLanding, setShowLanding] = useState(true);
   const [showAuthForm, setShowAuthForm] = useState(false);
-  const [isAuthenticated, setIsAuthenticated] = useState(false);
   const [userEmail, setUserEmail] = useState('');
+  const [authError, setAuthError] = useState('');
+  const [isLogtoInitialized, setIsLogtoInitialized] = useState(false);
   const [showSubscriptionPlans, setShowSubscriptionPlans] = useState(false);
   const [showPaymentModal, setShowPaymentModal] = useState(false);
   const [selectedPlan, setSelectedPlan] = useState<{ id: number; name: string; price: number } | null>(null);
   const [showProjects, setShowProjects] = useState(false);
   const [currentProjectId, setCurrentProjectId] = useState<string | null>(null);
 
-  const { subscription, refetch: refetchSubscription } = useSubscription(userEmail);
+  const { subscription } = useSubscription(userEmail);
   const { theme, toggleTheme } = useTheme();
+  const { isLoading, isAuthenticated, getIdToken, signOut } = useLogto();
 
   useEffect(() => {
-    const authToken = localStorage.getItem('authToken');
-    const savedEmail = localStorage.getItem('userEmail');
-    if (authToken && savedEmail) {
-      setIsAuthenticated(true);
-      setUserEmail(savedEmail);
-      setShowLanding(false);
+    setAuthTokenGetter(async () => (await getIdToken()) ?? null);
+  }, [getIdToken]);
+
+  useEffect(() => {
+    if (!isLoading) {
+      setIsLogtoInitialized(true);
     }
-  }, []);
+  }, [isLoading]);
+
+  useEffect(() => {
+    if (!isLogtoInitialized) return;
+    if (!isAuthenticated) {
+      setUserEmail('');
+      setAuthError('');
+      setShowLanding(true);
+      return;
+    }
+
+    let cancelled = false;
+    const loadLiveEditAccount = async () => {
+      try {
+        const response = await apiFetch(`${requireBackendUrl()}/api/auth/session`);
+        const data = await response.json();
+        if (!response.ok) {
+          throw new Error(data.error || 'Unable to set up your LiveEdit account');
+        }
+        if (!cancelled) {
+          setUserEmail(data.email);
+          setAuthError('');
+          setShowLanding(false);
+          setShowAuthForm(false);
+        }
+      } catch (error) {
+        if (!cancelled) {
+          setAuthError(error instanceof Error ? error.message : 'Sign-in failed');
+        }
+      }
+    };
+    loadLiveEditAccount();
+    return () => {
+      cancelled = true;
+    };
+  }, [getIdToken, isAuthenticated, isLogtoInitialized]);
 
   const handleAddAsset = (asset: MediaAsset) => {
     setAssets(prev => [asset, ...prev]);
@@ -61,29 +99,18 @@ const App: React.FC = () => {
     setMode(newMode);
   };
 
-  const handleAuthSuccess = (email: string) => {
-    setIsAuthenticated(true);
-    setUserEmail(email);
-    setShowLanding(false);
-    setShowAuthForm(false);
-    localStorage.setItem('userEmail', email);
-    refetchSubscription();
-  };
-
-  const handleLogout = () => {
-    setIsAuthenticated(false);
+  const handleLogout = async () => {
+    await signOut(`${window.location.origin}/`);
     setUserEmail('');
     setShowLanding(true);
     setShowAuthForm(false);
     setShowProjects(false);
     setCurrentProjectId(null);
-    localStorage.removeItem('authToken');
-    localStorage.removeItem('userEmail');
   };
 
   const handleSubscribe = async (planId: number) => {
     try {
-      const response = await fetch(`${requireBackendUrl()}/api/payments/plans`, {
+      const response = await apiFetch(`${requireBackendUrl()}/api/payments/plans`, {
         credentials: 'include'
       });
       const plans = await response.json();
@@ -117,12 +144,29 @@ const App: React.FC = () => {
     setShowProjects(false);
   };
 
+  if (!isLogtoInitialized) {
+    return <div className="min-h-screen bg-[#050505]" />;
+  }
+
+  if (isAuthenticated && !userEmail && !authError) {
+    return <div className="min-h-screen bg-[#050505] text-white flex items-center justify-center">Signing in…</div>;
+  }
+
+  if (authError) {
+    return (
+      <div className="min-h-screen bg-[#050505] text-white flex flex-col items-center justify-center gap-4 p-6 text-center">
+        <p>{authError}</p>
+        <button onClick={() => void signOut(`${window.location.origin}/`)} className="text-[#00ff41] underline">Sign out and try again</button>
+      </div>
+    );
+  }
+
   if (showLanding && !showAuthForm) {
     return <LandingPage onStart={() => setShowAuthForm(true)} />;
   }
 
   if (showLanding && showAuthForm && !isAuthenticated) {
-    return <AuthForm onAuthSuccess={handleAuthSuccess} />;
+    return <AuthForm onClose={() => setShowAuthForm(false)} />;
   }
 
   if (currentProjectId && !showProjects) {
