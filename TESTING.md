@@ -7,7 +7,7 @@ This document explains how to write and run tests for LiveEdit — both the Reac
 ## Table of Contents
 
 - [Quick Start](#quick-start)
-- [Frontend Testing (Jest + React Testing Library)](#frontend-testing)
+- [Frontend Testing (Vitest + React Testing Library)](#frontend-testing)
 - [Backend Testing (pytest)](#backend-testing)
 - [Coverage Targets](#coverage-targets)
 - [CI/CD](#cicd)
@@ -40,23 +40,23 @@ Dependencies are already in `package.json`. If starting fresh:
 
 ```bash
 cd LiveEditFronten
-npm install --save-dev jest @testing-library/react @testing-library/jest-dom @testing-library/user-event jest-environment-jsdom ts-jest
+npm install --save-dev vitest @vitest/coverage-v8 jsdom @testing-library/react @testing-library/jest-dom @testing-library/user-event
 ```
 
 ### Running Tests
 
 ```bash
-# Run all tests
+# Run all tests (single run)
 npm test
 
 # Run in watch mode (re-runs on file save)
-npm test -- --watch
+npm run test:watch
 
 # Run with coverage report
 npm test -- --coverage
 
 # Run a specific test file
-npm test -- ChatInterface.test.tsx
+npx vitest run ChatInterface.test.tsx
 ```
 
 ### Test File Locations
@@ -151,7 +151,7 @@ Tests run automatically on every pull request via GitHub Actions. See `.github/w
 
 The CI pipeline:
 1. Runs backend pytest with coverage
-2. Runs frontend Jest with coverage
+2. Runs frontend Vitest with coverage
 3. Fails the PR if either suite fails
 
 Do not merge a PR with failing tests.
@@ -180,7 +180,7 @@ Do not merge a PR with failing tests.
 
 ## Useful Resources
 
-- [Jest docs](https://jestjs.io/docs/getting-started)
+- [Vitest docs](https://vitest.dev/)
 - [React Testing Library docs](https://testing-library.com/docs/react-testing-library/intro)
 - [pytest docs](https://docs.pytest.org/en/stable/)
 - [pytest-cov](https://pytest-cov.readthedocs.io/en/latest/)
