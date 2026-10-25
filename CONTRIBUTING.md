@@ -39,7 +39,7 @@ LiveEditProject/
 │   ├── video_tasks.py       # Celery task definitions
 │   ├── ai_client.py         # AI service integrations
 │   └── requirements.txt      # Python dependencies
-├── LiveEditFronten/          # React/TypeScript frontend
+├── LiveEditFrontend/          # React/TypeScript frontend
 │   ├── components/          # React components
 │   ├── services/            # API and external service clients
 │   ├── hooks/               # Custom React hooks
