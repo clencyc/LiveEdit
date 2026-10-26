@@ -334,7 +334,7 @@ const ChatInterface: React.FC<ChatInterfaceProps> = ({ onAddAsset }) => {
         id: Math.random().toString(36).substr(2, 9),
         url: editedUrl,
         name: `EDITED_${currentVideoFile.name}`,
-        type: 'video',
+        type: 'generation',
         mimeType: 'video/mp4',
         timestamp: Date.now()
       };

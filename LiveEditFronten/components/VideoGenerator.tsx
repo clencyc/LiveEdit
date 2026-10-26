@@ -86,7 +86,7 @@ const VideoGenerator: React.FC<VideoGeneratorProps> = ({ onAddAsset }) => {
             id: Math.random().toString(36).substr(2, 9),
             url,
             name: `EDIT_${Date.now()}`,
-            type: 'edit',
+            type: 'generation',
             mimeType: 'video/mp4',
             timestamp: Date.now(),
           });

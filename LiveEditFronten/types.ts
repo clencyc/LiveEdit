@@ -22,6 +22,7 @@ export interface ChatMessage {
   role: 'user' | 'model';
   text: string;
   assetUrl?: string;
+  mimeType?: string;
   isGenerating?: boolean;
   showEditButton?: boolean;
 }
