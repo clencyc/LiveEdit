@@ -7,7 +7,7 @@ This document explains how to write and run tests for LiveEdit — both the Reac
 ## Table of Contents
 
 - [Quick Start](#quick-start)
-- [Frontend Testing (Jest + React Testing Library)](#frontend-testing)
+- [Frontend Testing (Vitest + React Testing Library)](#frontend-testing)
 - [Backend Testing (pytest)](#backend-testing)
 - [Coverage Targets](#coverage-targets)
 - [CI/CD](#cicd)
@@ -36,11 +36,11 @@ pytest
 
 ### Setup
 
-Dependencies are already in `package.json`. If starting fresh:
+Dependencies are already configured in `package.json`. If starting fresh:
 
 ```bash
 cd LiveEditFronten
-npm install --save-dev jest @testing-library/react @testing-library/jest-dom @testing-library/user-event jest-environment-jsdom ts-jest
+npm install --save-dev vitest @testing-library/react @testing-library/jest-dom @testing-library/user-event jsdom
 ```
 
 ### Running Tests

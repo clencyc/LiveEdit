@@ -1,28 +1,29 @@
 /**
  * LiveEdit Frontend — Example Tests
- * Stack: Jest + React Testing Library
+ * Stack: Vitest / Jest + React Testing Library
  *
  * Run: cd LiveEditFronten && npm test
  */
 
 import React from "react";
-import { render, screen, fireEvent, waitFor } from "@testing-library/react";
+import { render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import "@testing-library/jest-dom";
+import { vi, describe, test, expect, beforeEach } from "vitest";
 
 // ─────────────────────────────────────────────
 // MOCKS
 // ─────────────────────────────────────────────
 
 // Mock the services layer — tests never hit a real server or Gemini API
-jest.mock("../services/api", () => ({
-  sendChatMessage: jest.fn(),
-  analyzeVideo: jest.fn(),
+vi.mock("../services/api", () => ({
+  sendChatMessage: vi.fn(),
+  analyzeVideo: vi.fn(),
 }));
 
 // Mock useSubscription hook
-jest.mock("../hooks/useSubscription", () => ({
-  useSubscription: jest.fn(() => ({
+vi.mock("../hooks/useSubscription", () => ({
+  useSubscription: vi.fn(() => ({
     isSubscribed: true,
     plan: "pro",
     loading: false,
@@ -126,7 +127,7 @@ describe("ChatInterface — interactions", () => {
   });
 
   test("send button calls sendChatMessage with the typed message", async () => {
-    const mockSend = sendChatMessage as jest.Mock;
+    const mockSend = sendChatMessage as any;
     mockSend.mockResolvedValueOnce({ message: "Got it!", status: "success" });
 
     const user = userEvent.setup();
@@ -153,7 +154,7 @@ describe("ChatInterface — interactions", () => {
   });
 
   test("input clears after message is sent", async () => {
-    const mockSend = sendChatMessage as jest.Mock;
+    const mockSend = sendChatMessage as any;
     mockSend.mockResolvedValueOnce({ message: "Response", status: "success" });
 
     const user = userEvent.setup();
@@ -191,7 +192,7 @@ describe("ChatInterface — interactions", () => {
 
 describe("useSubscription hook", () => {
   test("returns subscription status and plan", () => {
-    const mockUseSubscription = useSubscription as jest.Mock;
+    const mockUseSubscription = useSubscription as any;
     mockUseSubscription.mockReturnValueOnce({
       isSubscribed: true,
       plan: "pro",
@@ -215,7 +216,7 @@ describe("useSubscription hook", () => {
   });
 
   test("shows loading state while fetching subscription", () => {
-    const mockUseSubscription = useSubscription as jest.Mock;
+    const mockUseSubscription = useSubscription as any;
     mockUseSubscription.mockReturnValueOnce({
       isSubscribed: false,
       plan: null,
@@ -233,7 +234,7 @@ describe("useSubscription hook", () => {
   });
 
   test("handles unsubscribed user", () => {
-    const mockUseSubscription = useSubscription as jest.Mock;
+    const mockUseSubscription = useSubscription as any;
     mockUseSubscription.mockReturnValueOnce({
       isSubscribed: false,
       plan: null,
@@ -255,10 +256,10 @@ describe("useSubscription hook", () => {
 // ─────────────────────────────────────────────
 
 describe("sendChatMessage service", () => {
-  beforeEach(() => jest.clearAllMocks());
+  beforeEach(() => vi.clearAllMocks());
 
   test("returns AI message on success", async () => {
-    const mockSend = sendChatMessage as jest.Mock;
+    const mockSend = sendChatMessage as any;
     mockSend.mockResolvedValueOnce({
       message: "Here are your editing suggestions.",
       status: "success",
@@ -270,7 +271,7 @@ describe("sendChatMessage service", () => {
   });
 
   test("throws on network error", async () => {
-    const mockSend = sendChatMessage as jest.Mock;
+    const mockSend = sendChatMessage as any;
     mockSend.mockRejectedValueOnce(new Error("Network error"));
 
     await expect(sendChatMessage("Hello")).rejects.toThrow("Network error");
@@ -279,7 +280,7 @@ describe("sendChatMessage service", () => {
 
 describe("analyzeVideo service", () => {
   test("sends file and prompt, returns analysis object", async () => {
-    const mockAnalyze = analyzeVideo as jest.Mock;
+    const mockAnalyze = analyzeVideo as any;
     mockAnalyze.mockResolvedValueOnce({
       summary: "A 30s sunset clip.",
       key_events: [{ time: "00:05", event: "sun touches horizon" }],

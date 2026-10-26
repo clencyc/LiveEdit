@@ -33,7 +33,7 @@ For detailed backend and frontend deployment instructions, see [DEPLOYMENT.md](D
 ## Project Structure
 
 ```
-LiveEditProject/
+LiveEdit/
 ├── LiveEditBackend/          # Python Flask backend with AI integrations
 │   ├── app.py               # Main Flask application
 │   ├── video_tasks.py       # Celery task definitions
@@ -51,8 +51,8 @@ LiveEditProject/
 
 1. **Fork and Clone**
    ```bash
-   git clone https://github.com/yourusername/LiveEditProject.git
-   cd LiveEditProject
+   git clone https://github.com/yourusername/LiveEdit.git
+   cd LiveEdit
    ```
 
 2. **Create a Feature Branch**
@@ -103,7 +103,7 @@ LiveEditProject/
 ### AI Integration
 - Gemini API integration (`services/gemini.ts`, `services/geminiLive.ts`)
 - Backend AI client (`ai_client.py`)
-- See [GEMINI_RETRY_FIX.md](GEMINI_RETRY_FIX.md) for known issues
+- See [GEMINI_RETRY_FIX.md](docs/GEMINI_RETRY_FIX.md) for known issues
 
 ### Real-time Features
 - Live editing interface (`LiveInterface.tsx`)
@@ -111,7 +111,7 @@ LiveEditProject/
 
 ## Important Considerations
 
-- **Authentication**: Firebase integration for user authentication
+- **Authentication**: Logto authentication for user sign-in and session management (see [LOGTO_AUTH.md](docs/LOGTO_AUTH.md))
 - **Subscriptions**: Tiered subscription system with payment integration
 - **Environment Variables**: Backend requires Google Cloud credentials
 - **Database**: Redis for caching, main DB (see deployment docs)

@@ -1,0 +1,68 @@
+name: Tests
+
+on:
+  push:
+    branches:
+      - master
+      - main
+  pull_request:
+    branches:
+      - master
+      - main
+
+jobs:
+  backend-tests:
+    name: Backend Tests (pytest)
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: "pip"
+          cache-dependency-path: "LiveEditBackend/requirements.txt"
+
+      - name: Install backend dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r LiveEditBackend/requirements.txt
+          pip install pytest pytest-cov httpx
+
+      - name: Run backend tests
+        working-directory: LiveEditBackend
+        env:
+          DATABASE_URL: "postgresql://test_user:test_pass@localhost:5432/liveedit_test"
+          LOGTO_ENDPOINT: "https://test.logto.app"
+          LOGTO_APP_ID: "test-app-id"
+          USE_VERTEX_AI: "false"
+          GEMINI_API_KEY: "test-api-key"
+          REDIS_URL: "redis://localhost:6379/0"
+        run: |
+          pytest tests/ -v
+
+  frontend-tests:
+    name: Frontend Tests (vitest)
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: "npm"
+          cache-dependency-path: "LiveEditFronten/package.json"
+
+      - name: Install frontend dependencies
+        working-directory: LiveEditFronten
+        run: npm install
+
+      - name: Run frontend tests
+        working-directory: LiveEditFronten
+        run: npm test

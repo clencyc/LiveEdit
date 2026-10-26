@@ -376,8 +376,6 @@ def extract_videos_to_workspace(job_id: str) -> list:
         print(f"[ERROR] Failed to extract videos from database: {str(e)}")
         raise
 
-    return psycopg2.connect(DATABASE_URL, cursor_factory=RealDictCursor)
-
 
 def init_auth_table():
     """Create users table if it doesn't exist"""

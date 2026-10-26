@@ -221,4 +221,4 @@ See `DEPLOYMENT.md` for the full guide and `docs/` for notes on past fixes (cook
 
 ## License
 
-MIT. Add a `LICENSE` file to the repository root, since none is currently present.
+MIT (see [LICENSE](LICENSE)).
