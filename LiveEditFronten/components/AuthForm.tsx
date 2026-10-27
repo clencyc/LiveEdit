@@ -9,8 +9,8 @@ const AuthForm: React.FC<AuthFormProps> = ({ onClose }) => {
   const { signIn, error, isLoading } = useLogto();
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/90 backdrop-blur-sm p-4">
-      <div className="relative w-full max-w-md rounded-xl border border-neutral-800 bg-[#111] p-8 text-center">
+    <div className="editor-theme-overlay fixed inset-0 z-50 flex items-center justify-center bg-black/90 backdrop-blur-sm p-4">
+      <div className="editor-theme-modal relative w-full max-w-md rounded-xl border border-neutral-800 bg-[#111] p-8 text-center">
         <button
           type="button"
           onClick={onClose}

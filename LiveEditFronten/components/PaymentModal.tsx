@@ -67,7 +67,7 @@ export const PaymentModal: React.FC<PaymentModalProps> = ({
           animate={{ opacity: 1 }}
           exit={{ opacity: 0 }}
           onClick={onClose}
-          className="absolute inset-0 bg-black/70 backdrop-blur-sm"
+          className="editor-theme-overlay absolute inset-0 bg-black/70 backdrop-blur-sm"
         />
 
         {/* Modal */}
@@ -75,7 +75,7 @@ export const PaymentModal: React.FC<PaymentModalProps> = ({
           initial={{ opacity: 0, scale: 0.9 }}
           animate={{ opacity: 1, scale: 1 }}
           exit={{ opacity: 0, scale: 0.9 }}
-          className="relative bg-gray-900 rounded-2xl p-8 max-w-md w-full shadow-2xl border border-gray-700"
+          className="editor-theme-modal relative bg-gray-900 rounded-2xl p-8 max-w-md w-full shadow-2xl border border-gray-700"
         >
           {/* Close button */}
           <button
@@ -99,7 +99,7 @@ export const PaymentModal: React.FC<PaymentModalProps> = ({
               <p className="text-gray-400">You're subscribing to the {planName} plan</p>
             </div>
 
-            <div className="bg-gray-800/50 rounded-lg p-6 mb-6 border border-gray-700">
+            <div className="editor-theme-card bg-gray-800/50 rounded-lg p-6 mb-6 border border-gray-700">
               <div className="flex justify-between items-center mb-4">
                 <span className="text-gray-400">Plan</span>
                 <span className="font-semibold">{planName}</span>

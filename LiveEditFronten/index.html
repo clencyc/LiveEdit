@@ -85,8 +85,45 @@
         .editor-border { border-color: var(--border); }
         .editor-input { background-color: var(--input); border-color: var(--border); }
 
+        .editor-theme-content { color: var(--text); }
+
+        html[data-theme="light"] .editor-theme-card {
+            background-color: var(--surface) !important;
+            color: var(--text-strong);
+            border-color: var(--border);
+        }
+
+        html[data-theme="light"] .editor-theme-modal {
+            background-color: var(--surface) !important;
+            color: var(--text-strong);
+            border-color: var(--border);
+            box-shadow: 0 24px 80px rgb(15 23 42 / 18%);
+        }
+
+        html[data-theme="light"] .editor-theme-overlay {
+            background-color: rgb(15 23 42 / 42%) !important;
+        }
+
+        html[data-theme="light"] .editor-theme-toggle {
+            color: var(--muted-strong);
+            border-color: var(--border);
+        }
+
+
+        /*
+         * Light-theme compatibility layer.
+         *
+         * The UI intentionally uses a dark editorial palette in dark mode. Map
+         * utility classes used for dark surfaces to the shared theme tokens in
+         * light mode so legacy screens stay readable without changing the dark
+         * theme or rewriting every component at once.
+         */
+        html[data-theme="light"] [class*="bg-neutral-950"],
         html[data-theme="light"] [class*="bg-neutral-900"],
+        html[data-theme="light"] [class*="bg-gray-950"],
         html[data-theme="light"] [class*="bg-gray-900"],
+        html[data-theme="light"] [class*="bg-slate-950"],
+        html[data-theme="light"] [class*="bg-slate-900"],
         html[data-theme="light"] [class*="bg-slate-800"],
         html[data-theme="light"] [class~="bg-[#050505]"],
         html[data-theme="light"] [class~="bg-[#0a0a0a]"],
@@ -95,6 +132,7 @@
         html[data-theme="light"] [class~="bg-[#0d0d0d]"],
         html[data-theme="light"] [class~="bg-[#0f0f0f]"],
         html[data-theme="light"] [class~="bg-[#111]"],
+        html[data-theme="light"] [class~="bg-[#111111]"],
         html[data-theme="light"] [class~="bg-[#131313]"],
         html[data-theme="light"] [class~="bg-[#141414]"],
         html[data-theme="light"] [class~="bg-[#161616]"],
@@ -108,19 +146,22 @@
         html[data-theme="light"] [class*="bg-gray-800"],
         html[data-theme="light"] [class*="bg-gray-700"],
         html[data-theme="light"] [class*="bg-gray-600"],
+        html[data-theme="light"] [class*="bg-slate-800"],
         html[data-theme="light"] [class*="bg-slate-700"],
         html[data-theme="light"] [class~="bg-[#1a1a1a]"],
         html[data-theme="light"] [class~="bg-[#1f1f1f]"],
-        html[data-theme="light"] [class~="bg-[#222]"] {
+        html[data-theme="light"] [class~="bg-[#222]"],
+        html[data-theme="light"] [class~="bg-[#222222]"] {
             background-color: var(--surface-raised);
         }
 
-        html[data-theme="light"] [class*="bg-black/40"],
-        html[data-theme="light"] [class*="bg-black/50"],
-        html[data-theme="light"] [class*="bg-black/60"],
-        html[data-theme="light"] [class*="bg-black/70"],
-        html[data-theme="light"] [class*="bg-black/80"] {
-            background-color: var(--surface-raised);
+        /* Keep translucent overlay utilities usable on a light canvas. */
+        html[data-theme="light"] [class*="bg-black/"],
+        html[data-theme="light"] [class*="bg-neutral-950/"],
+        html[data-theme="light"] [class*="bg-neutral-900/"],
+        html[data-theme="light"] [class*="bg-gray-950/"],
+        html[data-theme="light"] [class*="bg-gray-900/"] {
+            background-color: color-mix(in srgb, var(--surface-raised) 94%, transparent);
         }
 
         html[data-theme="light"] [class~="bg-black"] {
@@ -128,10 +169,16 @@
         }
 
         html[data-theme="light"] [class*="text-white"],
+        html[data-theme="light"] [class*="text-neutral-50"],
         html[data-theme="light"] [class*="text-neutral-100"],
         html[data-theme="light"] [class*="text-neutral-200"],
         html[data-theme="light"] [class*="text-neutral-300"],
+        html[data-theme="light"] [class*="text-gray-50"],
+        html[data-theme="light"] [class*="text-gray-100"],
+        html[data-theme="light"] [class*="text-gray-200"],
         html[data-theme="light"] [class*="text-gray-300"],
+        html[data-theme="light"] [class*="text-slate-50"],
+        html[data-theme="light"] [class*="text-slate-100"],
         html[data-theme="light"] [class*="text-slate-200"],
         html[data-theme="light"] [class*="text-slate-300"] {
             color: var(--text-strong);
@@ -144,9 +191,12 @@
         html[data-theme="light"] [class*="text-neutral-800"],
         html[data-theme="light"] [class*="text-gray-400"],
         html[data-theme="light"] [class*="text-gray-500"],
+        html[data-theme="light"] [class*="text-gray-600"],
+        html[data-theme="light"] [class*="text-gray-700"],
         html[data-theme="light"] [class*="text-slate-400"],
         html[data-theme="light"] [class*="text-slate-500"],
-        html[data-theme="light"] [class*="text-slate-600"] {
+        html[data-theme="light"] [class*="text-slate-600"],
+        html[data-theme="light"] [class*="text-slate-700"] {
             color: var(--muted-strong);
         }
 
@@ -154,6 +204,20 @@
         html[data-theme="light"] [class*="border-slate-"],
         html[data-theme="light"] [class*="border-gray-"] {
             border-color: var(--border);
+        }
+
+        /* Make native form controls follow the selected theme. */
+        html[data-theme="light"] input:not([type="checkbox"]):not([type="radio"]):not([type="range"]):not([type="file"]),
+        html[data-theme="light"] textarea,
+        html[data-theme="light"] select {
+            color: var(--text-strong);
+            caret-color: currentColor;
+        }
+
+        html[data-theme="light"] input::placeholder,
+        html[data-theme="light"] textarea::placeholder {
+            color: #666666;
+            opacity: 1;
         }
 
         html[data-theme="light"] [class~="from-black"] {
@@ -170,6 +234,64 @@
             --tw-gradient-to: rgb(245 245 245 / 0) var(--tw-gradient-to-position);
             --tw-gradient-stops: var(--tw-gradient-from), var(--tw-gradient-via), var(--tw-gradient-to);
             --tw-gradient-via: var(--bg) var(--tw-gradient-via-position);
+        }
+
+        /* Translate dark gradient endpoints on older screens too. */
+        html[data-theme="light"] [class*="from-neutral-950"],
+        html[data-theme="light"] [class*="from-neutral-900"],
+        html[data-theme="light"] [class*="from-gray-950"],
+        html[data-theme="light"] [class*="from-gray-900"],
+        html[data-theme="light"] [class*="from-slate-950"],
+        html[data-theme="light"] [class*="from-slate-900"] {
+            --tw-gradient-from: var(--surface) var(--tw-gradient-from-position);
+            --tw-gradient-to: rgb(255 255 255 / 0) var(--tw-gradient-to-position);
+            --tw-gradient-stops: var(--tw-gradient-from), var(--tw-gradient-to);
+        }
+
+        html[data-theme="light"] [class*="via-neutral-950"],
+        html[data-theme="light"] [class*="via-neutral-900"],
+        html[data-theme="light"] [class*="via-gray-950"],
+        html[data-theme="light"] [class*="via-gray-900"] {
+            --tw-gradient-to: rgb(255 255 255 / 0) var(--tw-gradient-to-position);
+            --tw-gradient-stops: var(--tw-gradient-from), var(--tw-gradient-via), var(--tw-gradient-to);
+            --tw-gradient-via: var(--surface) var(--tw-gradient-via-position);
+        }
+
+        html[data-theme="light"] [class*="to-neutral-950"],
+        html[data-theme="light"] [class*="to-neutral-900"],
+        html[data-theme="light"] [class*="to-gray-950"],
+        html[data-theme="light"] [class*="to-gray-900"],
+        html[data-theme="light"] [class*="to-slate-950"],
+        html[data-theme="light"] [class*="to-slate-900"] {
+            --tw-gradient-to: var(--surface) var(--tw-gradient-to-position);
+        }
+
+
+        /* Saturated workflow-node labels need stronger contrast in light mode. */
+        html[data-theme="light"] .workflow-start-node {
+            background-color: #166534 !important;
+            border-color: #14532d;
+        }
+
+        html[data-theme="light"] .workflow-stop-node {
+            background-color: #991b1b !important;
+            border-color: #7f1d1d;
+        }
+
+        html[data-theme="light"] .workflow-start-node,
+        html[data-theme="light"] .workflow-stop-node {
+            color: #ffffff;
+        }
+
+        /* Preserve the subscription card's blue-to-purple identity on a light canvas. */
+        html[data-theme="light"] [class*="from-blue-900"] {
+            --tw-gradient-from: #eff6ff var(--tw-gradient-from-position);
+            --tw-gradient-to: rgb(239 246 255 / 0) var(--tw-gradient-to-position);
+            --tw-gradient-stops: var(--tw-gradient-from), var(--tw-gradient-to);
+        }
+
+        html[data-theme="light"] [class*="to-purple-900"] {
+            --tw-gradient-to: #f3e8ff var(--tw-gradient-to-position);
         }
 
         /* Accent colors stay the same */

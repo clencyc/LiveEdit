@@ -112,7 +112,7 @@ export const SubscriptionPlans: React.FC<SubscriptionPlansProps> = ({
   }
 
   return (
-    <div className="max-w-6xl mx-auto px-4 py-12">
+    <div className="editor-theme-content max-w-6xl mx-auto px-4 py-12">
       <div className="text-center mb-12">
         <h2 className="text-4xl font-bold mb-4 bg-gradient-to-r from-blue-500 to-purple-600 bg-clip-text text-transparent">
           Choose Your Plan
@@ -133,7 +133,7 @@ export const SubscriptionPlans: React.FC<SubscriptionPlansProps> = ({
               initial={{ opacity: 0, y: 20 }}
               animate={{ opacity: 1, y: 0 }}
               transition={{ delay: index * 0.1 }}
-              className={`relative rounded-2xl p-8 ${
+              className={`editor-theme-card relative rounded-2xl p-8 ${
                 isPremium
                   ? 'bg-gradient-to-br from-blue-900/50 to-purple-900/50 border-2 border-blue-500'
                   : 'bg-gray-800/50 border border-gray-700'

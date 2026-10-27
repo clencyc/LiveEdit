@@ -139,7 +139,7 @@ export const StartStopNode: React.FC<NodeProps<NodeData>> = ({ data, selected })
         />
       )}
       
-      <div className={`w-24 h-24 rounded-full ${isStart ? 'bg-green-600 border-4 border-green-700' : 'bg-red-600 border-4 border-red-700'} flex flex-col items-center justify-center shadow-xl`}>
+      <div className={`w-24 h-24 rounded-full ${isStart ? 'workflow-start-node bg-green-600 border-4 border-green-700' : 'workflow-stop-node bg-red-600 border-4 border-red-700'} flex flex-col items-center justify-center shadow-xl`}>
         <i className={`fas ${isStart ? 'fa-play' : 'fa-stop'} text-white text-2xl mb-1`}></i>
         <span className="text-white font-bold text-[10px] uppercase tracking-wider">{data.label || (isStart ? 'Start' : 'Stop')}</span>
       </div>

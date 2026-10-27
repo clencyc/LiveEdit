@@ -111,7 +111,7 @@ const ProjectsView: React.FC<ProjectsViewProps> = ({ userEmail, onOpenProject, o
   };
 
   return (
-    <div className="h-full bg-[#0a0a0a] flex flex-col">
+    <div className="editor-bg h-full flex flex-col">
       {/* Header */}
       <div className="p-6 border-b border-neutral-800">
         <div className="flex items-center justify-between mb-4">
